@@ -10,3 +10,4 @@ __pycache__/
 # the run's local state
 *.sqlite3
 *.log
+node_modules/

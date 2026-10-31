@@ -1,11 +1,21 @@
-# thor-world (working name)
+# thor-world
 
-The live wire between a Thor-generated world and the people and agents who use it:
+The live wire between a world generated on the Jetson AGX Thor and the people and agents who use it. Two halves:
 
-- **world-mcp**: an MCP server over builder-ide's core, so any agent (Claude Code, zcode, mcode, others) can read the world's context and act on it through the typed vocabulary.
-- **world-stream + viewer**: a deterministic recipe-to-glTF compiler with real LODs, GPU-compressed textures and a `since_version` delta channel, built for the Jetson AGX Thor, and a browser viewer on the ProArt that watches the world change live.
+| Component | What it is | Where | Status |
+|---|---|---|---|
+| **world-mcp** (`src/`, `tests/`, `demo/`) | An MCP server over builder-ide's core: the only way agents (Claude Code, zcode, mcode, cloud tile authors) work on a world, through the core's typed doors. Every action is recorded with its author. | Thor or ProArt | 30/30 tests against a live core; the "make these sturdier" demo runs end to end ([design](docs/design.md)) |
+| **world-stream** (`compiler/`, `viewer/`) | A deterministic recipe-to-glTF compiler (real LOD chains, GPU instancing, quantization + meshopt, provenance), a `since_version` delta channel over SSE, and a three.js viewer (WebGPU, with a WebGL2 fallback). | Compiler on the Thor; viewer in Chrome on the ProArt | Byte-identical builds across the Thor and an x86 ProArt; a 629 B delta for one moved table; 3.51 M triangles over all LODs in 43.8 MB, compiled in 6.7 s ([design](docs/stream-design.md), [numbers](docs/measurements.md)) |
 
-It fills the role of the private companion repo of the `maquette` Infinigen fork (an MCP server plus a browser viewer). It is our own design, optimised for the Thor; see builder-ide's `docs/research/maquette.md` for what we learned from that fork's public half. Licence: MIT.
+It fills the role of the private companion repo of the `maquette` Infinigen fork (an MCP server plus a browser viewer). It is our own design, built for the Thor; see builder-ide's [`docs/research/maquette.md`](https://github.com/SI-Thor/builder-ide/blob/main/docs/research/maquette.md) for what we learned from that fork's public half.
+
+**Open for the owner:**
+- the colour pipeline: Infinigen materials stall the stock glTF exporter, so today's world is grey;
+- a source build of `toktx` (KTX-Software, Apache-2.0) for KTX2 textures;
+- Warp simplification for the room-shell serial tail;
+- a two-minute WebGPU check in desktop Chrome.
+
+Licence: MIT. Part of [builder-ide](https://github.com/SI-Thor/builder-ide); world engine: [infinigen-thor](https://github.com/SI-Thor/infinigen-thor).
 
 ## world-mcp
 
@@ -61,3 +71,7 @@ uvicorn server and drives the server as a stdio subprocess through the
 official MCP client; the HTTP transport and the `world.dirty` push have
 their own tests.
 
+
+## world-stream
+
+See [`compiler/README.md`](compiler/README.md) (recipe → world file → delta) and [`viewer/README.md`](viewer/README.md) (the dev server and the live viewer). Measurements with the box state beside every number are in [`docs/measurements.md`](docs/measurements.md); screenshots are in `docs/screenshots/`.
