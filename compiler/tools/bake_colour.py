@@ -323,7 +323,7 @@ def make_image(name: str, res: int, srgb: bool):
     return img
 
 
-def bake_object(obj, img, bake_type: str, pass_filter=None, margin: int = 4) -> None:
+def bake_object(obj, img, bake_type: str, pass_filter=None, margin: int = 4) -> bool:
     import bpy
 
     # point every material of this object at the bake image via a temporary
@@ -338,6 +338,8 @@ def bake_object(obj, img, bake_type: str, pass_filter=None, margin: int = 4) -> 
         node.name = "WB_bake_target"
         mat.node_tree.nodes.active = node
         added.append((mat, node))
+    if not added:
+        return False  # nothing to bake onto — the wire shows default grey here
     try:
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
@@ -350,6 +352,7 @@ def bake_object(obj, img, bake_type: str, pass_filter=None, margin: int = 4) -> 
     finally:
         for mat, node in added:
             mat.node_tree.nodes.remove(node)
+    return True
 
 
 def image_pixels(img, res: int) -> np.ndarray:
