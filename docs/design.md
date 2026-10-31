@@ -60,6 +60,7 @@ endpoint with exactly one token class; each resource composes reads.
 | tool `read_night_plan` | `/v1/slate` + `/v1/budget` | panel | the plan and its price; starting the night is *not* offered |
 | tool `propose_recipe_edit` | `/v1/predictions/seal` then `/v1/vocab/call` | character | seal first (§5.1); refusals verbatim |
 | tool `request_render` | `/v1/tasks` (kind `rung.N`) | character | priced by the cost model; the engine seat renders it |
+| tool `propose_plan_intention` | `/v1/tasks` (kind `plan.intention`) | character | a proposal on the slate; the band is the proposal's own footprint (marked [e]) |
 | tool `file_work_order` | `/v1/call` | owner | utterance + view → question XOR draft + confirm line |
 | tool `confirm_work_order` | `/v1/work-orders/{id}/confirm` | owner | go / no / edit; idempotent by key |
 | tool `answer_question` | `/v1/questions/{id}/answer` | owner | the never-guess loop closes |

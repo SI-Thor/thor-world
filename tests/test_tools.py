@@ -229,6 +229,42 @@ def test_confirm_is_idempotent_by_key(mcp):
 # ------------------------------------------------------------- the night
 
 
+def test_propose_plan_intention_files_on_the_slate(mcp):
+    """The core's plan.intention kind (design note §8.4, answered): an
+    agent proposes to the night's slate, priced like everything else."""
+    body = tool_body(mcp.call("propose_plan_intention", {
+        "intention": "rope coils for the south span — three variants, "
+                     "the owner picks one"}))
+    task = body["task"]
+    assert task["kind"] == "plan.intention"
+    assert task["state"] == "slated"
+    # the proposal's own footprint: filing runs nothing on the box — the
+    # ask is the owner's decision on it, the model's attention estimate,
+    # marked [e] until a morning measures it
+    assert body["price"]["ask"]["gpu_minutes"] == 0.0
+    assert body["price"]["ask"]["wall_minutes"] > 0.0
+    assert body["price"]["basis"] == "estimate"
+    assert body["price"]["marked"] == "[e]"
+    assert body["recorded_as"] == "prop-maker"
+    assert body["agent"] == "world-mcp"
+    # the slate the owner reads before starting the night carries the
+    # proposal, marked and all
+    plan = tool_body(mcp.call("read_night_plan"))
+    row = next(r for r in plan["slate"]["rows"]
+               if r["kind"] == "plan.intention")
+    assert row["marked"] == "[e]"
+    assert "rope coils" in row["intention"]
+
+
+def test_propose_plan_intention_keeps_an_override_an_override(mcp):
+    body = tool_body(mcp.call("propose_plan_intention", {
+        "intention": "a proposal priced by its filer",
+        "cost_estimate": {"gpu_minutes": 0, "wall_minutes": 5,
+                          "hosted_cents": 0}}))
+    assert body["task"]["ask_source"] == "override"
+    assert body["task"]["cost_estimate"]["wall_minutes"] == 5
+
+
 def test_queue_genbatch_prices_the_batch(mcp, core_server):
     _url, core = core_server
     body = tool_body(mcp.call("queue_genbatch", {

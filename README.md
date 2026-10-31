@@ -23,12 +23,15 @@ op list that turns the base into it), `world://renders` (and critic
 verdicts), `world://ledger` (the two tallies), `world://dirty` (the
 `{branch, head, seq}` cursor).
 
-**Eight tools:** `get_context`, `list_vocabulary`, `read_night_plan`,
+**Nine tools:** `get_context`, `list_vocabulary`, `read_night_plan`,
 `propose_recipe_edit` (seals the prediction first), `request_render`,
+`propose_plan_intention` (a proposal on the night's slate, kind
+`plan.intention` — the band is the proposal's own footprint),
 `file_work_order` (terse request + context → question XOR draft + the
-one-line confirm), `confirm_work_order` / `answer_question`, `queue_genbatch`,
-`subscribe_world_dirty`. No tool runs arbitrary code in the world; a core
-refusal (a coming-soon word, params outside a schema) is surfaced verbatim.
+one-line confirm), `confirm_work_order` / `answer_question`,
+`queue_genbatch`, `subscribe_world_dirty`. No tool runs arbitrary code in
+the world; a core refusal (a coming-soon word, params outside a schema)
+is surfaced verbatim.
 
 **Running it** (from this directory; the core is builder-ide's, installed
 read-only into this venv from its own tree):

@@ -601,6 +601,48 @@ def _register_tools(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> None
     # ---------------------------------------------------------- the night
 
     @mcp.tool(
+        name="propose_plan_intention",
+        description="Propose to the night's slate (kind plan.intention): a "
+                    "plan you believe the night should run — read "
+                    "world://context first and aim the proposal at a real "
+                    "gap. It is priced by the cost model like everything "
+                    "else, but the band is the proposal's own footprint: a "
+                    "slate row and the owner's decision on it (zero GPU; "
+                    "the attention estimate, marked [e]). It prices the "
+                    "proposal, not the work it may seed — that work is "
+                    "priced by its own kind when the night runs it. The "
+                    "owner reads the slate before starting the night; "
+                    "starting it is their door, not yours.",
+    )
+    async def tool_propose_plan_intention(
+        intention: str,
+        night: str | None = None,
+        cost_estimate: dict[str, float] | None = None,
+    ) -> dict:
+        body: dict[str, Any] = {"intention": intention,
+                                "kind": "plan.intention"}
+        if night:
+            body["night"] = night
+        if cost_estimate:
+            body["cost_estimate"] = cost_estimate
+        try:
+            task = await core.post("/v1/tasks", body, principal="character")
+        except CoreError as exc:
+            raise ToolError(_refusal(exc)) from exc
+        row = task.get("task", {})
+        return {
+            "task": row,
+            "price": {"ask": row.get("cost_estimate"), "rail": row.get("rail"),
+                      "ask_source": row.get("ask_source"),
+                      "basis": row.get("ask_basis"),
+                      "marked": "[e]" if row.get("ask_basis") == "estimate" else ""},
+            "note": "slated for the owner to read; the night work it seeds "
+                    "is priced by its own kind when the night runs it",
+            **author_note(await task_author(row.get("id")),
+                          fallback=row.get("author")),
+        }
+
+    @mcp.tool(
         name="queue_genbatch",
         description="Queue a generative batch (genbatch): a night of props "
                     "made by the local image model + TRELLIS.2, measured, "
