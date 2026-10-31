@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# environments and caches
+.venv/
+.pytest_cache/
+
+# the run's local state
+*.sqlite3
+*.log
