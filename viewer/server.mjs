@@ -77,7 +77,12 @@ setInterval(() => {
   const next = scanVersions();
   const grew = next.head > world.head;
   world = next;
-  if (grew && DEMO_DELAY_MS === 0) releasePending();
+  if (!grew) return;
+  if (DEMO_DELAY_MS === 0) releasePending();
+  else if (subscribers.size > 0 && !demoTimer) {
+    // a version that lands after the page subscribed still "lands" on screen
+    demoTimer = setTimeout(() => { demoTimer = null; releasePending(); }, DEMO_DELAY_MS);
+  }
 }, 500);
 
 function releasePending() {
