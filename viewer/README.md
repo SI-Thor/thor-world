@@ -31,7 +31,11 @@ node server.mjs [path/to/build] --port 8787
   KB-class delta moves one named instance live, with provenance on screen;
   LOD chains are real (watch the "lod mix" chip change as you zoom); the
   WebGPU/WebGL2 badge tells the truth about which backend ran.
+  Screenshots of both demo loops (fixture and the real Infinigen living
+  room, delta applied live) are in `../docs/screenshots/` — driven and
+  captured by headless Chromium; see `../docs/measurements.md` §6.
 - **Doesn't (yet):** fragment-GLB deltas (`instance.add` with new
   geometry) are schema-reserved, not handled; textures are unexercised
-  (the source scene has none); lights/cameras from the source scene are
-  not imported (the page brings its own sun + hemisphere).
+  (the source scene has none — see measurements.md §1.1 for why, and
+  what the colour pipeline needs); lights/cameras from the source scene
+  are not imported (the page brings its own sun + hemisphere).

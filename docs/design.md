@@ -91,7 +91,7 @@ under a screen-pixel budget (§6), with hysteresis.
 | | meshopt | Draco |
 |---|---|---|
 | decode in the browser | WASM/JS decoder in three.js, ~29 KB, also on WebGPU fast paths | WASM decoder, larger, slower decode |
-| determinism | encoder is deterministic (verified byte-identical across runs, machines, thread counts) | Draco's encoder is **not** byte-stable across runs (the maquette report's defect #4; we re-verified the claim is about the toolchain, not our code) |
+| determinism | encoder is deterministic (verified byte-identical across runs, machines, thread counts) | Draco's encoder is **not** byte-stable across runs — maquette report's defect #4, about the toolchain itself |
 | quantization story | one pass: we quantize to integer attributes (spec-visible, KHR_mesh_quantization) then entropy-code | quantization hidden inside Draco's stack |
 | CPU encode cost | ~1–5 ms per mesh on Neoverse (measured) | comparable, but the determinism failure alone disqualifies it for a `since_version` wire |
 
@@ -104,12 +104,14 @@ Maquette probed `toktx` and never invoked it; textures stayed PNG. Our
 wire reserves `KHR_texture_basisu` and the design is: textures quantize and
 transcode to KTX2/UASTC (scene textures) or ETC1S (long-tail materials) on
 the Thor, in the compiler's texture stage, declared in the manifest with
-per-texture bytes. **Today this is designed, not measured**: the Infinigen
-2.0 living-room export carries untextured principled materials (base colors
-only — Cycles node graphs do not survive glTF export), so there is nothing
-to transcode in the slice. The encode path needs `toktx` from
-KTX-Software, which has no mainstream aarch64 binary — it is on the
-build-from-source list for Casey's OK (§7), with the GPU alternative
+per-texture bytes. **Today this is designed, not measured** — and it is now
+also the *colour* pipeline, not just compression: the Infinigen 2.0
+living-room materials stall the bpy glTF exporter outright (its node-graph
+search explodes; measurements.md §1.1), so the slice's export carries
+geometry with flat materials and no base colours. Baking/flattening
+material colours in the warm-scene server (Cycles bake, or a cheap
+average-colour pass) is the prerequisite for a coloured viewer; `toktx`
+itself needs a source build on the Thor (§7), with the GPU alternative
 (`cuda-bcu` / BC7 on the Blackwell SMs) sketched in §5.2.
 
 ### 1.6 The `since_version` delta (defect #5 answered)
@@ -153,23 +155,31 @@ GPU paths are the follow-up experiments, each with a named falsifier.
 
 The world file's source is a real Infinigen 2.0 run: `export_scene.py`
 drives the *same* code path as the `infinigen` CLI (`infinigen2.generate.
-_main`, the pattern `~/lm-wt/v2-thor/warm_scene.py` proved) in one resident
-bpy 4.2 process — generate → save `.blend` → export glTF — so the export is
-the state the renderer sees, not a re-derivation. In production this stops
-being a subprocess: the **warm scene server** (`core/engine/resident/`)
-holds the scene, and the compiler reads from it (§2.4). Measured: the
-generation and export numbers are in measurements.md (short version: the
-glTF export of the subsurfed living room dominates the wall clock — that is
-the first thing the zero-copy path removes).
+_main`, the resident-process pattern `~/lm-wt/v2-thor/warm_scene.py`
+proved for generation) in one resident bpy 4.2 process — generate →
+save `.blend` → export glTF — so the export is the state the renderer
+sees, not a re-derivation. One measured warning (measurements.md §1.1):
+the bpy 4.2 glTF *exporter itself* stalls exponentially on Infinigen's
+procedural node graphs — the slice exports with `export_materials=
+'NONE'` in seconds, and colour must come back via the texture stage. In
+production this stops being a subprocess: the **warm scene server**
+(`core/engine/resident/`) holds the scene, and the compiler reads from
+it (§2.4). Measured: the generation and export numbers are in
+measurements.md (short version: generation is 16 s; the glTF *file
+export* is the seam the zero-copy path removes).
 
 ### 2.2 Mesh simplification — CPU today, GPU next
 
 **CPU (today, measured):** meshopt quadric simplification in WASM, one
 template per task, fanned across worker threads (`--jobs N`). On the 14
-Neoverse cores this is embarrassingly parallel per-template; determinism is
-preserved because assembly order is fixed by template hash, not completion
-order (verified: `--jobs 1` ≡ `--jobs 4` byte-identically; the 1-vs-14
-scaling numbers on the real scene are in measurements.md).
+Neoverse cores this is embarrassingly parallel per-template — up to the
+scene's biggest template, which is the serial tail: the living room
+compiles in 6.74 s at `--jobs 1` and 8.06 s at `--jobs 14` because one
+1.77 M-triangle shell template dominates (measurements.md §4).
+Determinism is preserved because assembly order is fixed by template
+hash, not completion order (verified: `--jobs 1` ≡ `--jobs 14`
+byte-identically on the living room, `--jobs 1` ≡ `--jobs 4` on the
+fixture — and cross-machine, x86 vs aarch64, on both scenes).
 
 **GPU (designed, next experiment):** the quadric solver maps to Warp
 (NVIDIA's Python→CUDA, MIT; already proven on this box by the v2
@@ -208,15 +218,16 @@ the cost the zero-copy path removes, and that number is in measurements.md.
 The night's `card` events and the morning report need thumbnails that glTF
 cannot give: "what the camera sees". The design: the resident scene renders
 short orbits/turntables and NVENC encodes them on the dedicated encoder
-block — zero contention with Cycles on the SMs. Measured today (512×512,
-90 frames, 30 fps, 2 Mb/s): **h264 0.36 s wall (~250 fps), hevc 0.35 s at
-0.90× the size**; `av1_nvenc` on this driver produced no frames at these
-settings (recorded as a no, not hidden). Caveat recorded beside the
-numbers: this Ubuntu ffmpeg is a minimal Jetson build — no concat demuxer,
-no swscale, no libx264 — so frames must arrive as NV12 (our numpy bridge
-did the RGB→NV12 pass; in production the render hands NV12/RGBA straight
-to the encoder, GPU-side). The CPU h264 comparison is therefore absent,
-not skipped silently.
+block — zero contention with Cycles on the SMs. Measured (512×512, 90
+frames, 30 fps, 2 Mb/s, load ~60): **h264 0.415 s wall (~217 fps), hevc
+0.230 s (~391 fps) at 0.90× the size**; `av1_nvenc` on this driver
+produced no frames at these settings (recorded as a no, not hidden).
+Re-runs are byte-identical. Caveat recorded beside the numbers: this
+Ubuntu ffmpeg is a minimal Jetson build — no concat demuxer, no swscale,
+no libx264 — so frames must arrive as NV12 (our numpy bridge did the
+RGB→NV12 pass; in production the render hands NV12/RGBA straight to the
+encoder, GPU-side). The CPU h264 comparison is therefore absent, not
+skipped silently.
 
 ### 2.6 What the ProArt does
 
@@ -312,16 +323,16 @@ for the wire, is rejected on determinism (§1.4).
 
 | claim | status |
 |---|---|
-| deterministic full build (same recipe+source → identical bytes) | **measured** (in-process, cross-job-count; cross-machine) |
-| source export determinism (Infinigen 2.0 same seed → identical GLB) | **measured** (two full exports, sha256-compared) |
-| real LOD chains with per-LOD triangle counts | **measured** (fixture + living room) |
-| instancing dedup ratio on a real scene | **measured** (living room, in measurements.md) |
-| delta size vs full file | **measured** (fixture + living room edit) |
-| compile wall clock, 1 vs 14 jobs on the Thor | **measured** |
-| NVENC filmstrip encode | **measured** (h264/hevc; av1 = no) |
-| KTX2/Basis textures | designed (nothing to transcode in this scene; toktx needs Casey's OK) |
-| GPU (Warp) simplification | designed + falsifier named (§2.2) |
-| zero-copy resident-scene export | designed; the cost it removes (file export) is measured |
-| viewer WebGPU on the ProArt's Chrome | measured at demo time (the badge records which backend actually ran) |
+| deterministic full build (same recipe+source → identical bytes) | **measured** (in-process, cross-job-count 1≡14 on the living room, cross-machine x86 ≡ aarch64 on both scenes) |
+| source export determinism (Infinigen 2.0 same seed → identical GLB) | **measured** (two full generates → byte-identical `source.glb`, sha256-equal; the `.blend`s differ — see measurements.md §1) |
+| real LOD chains with per-LOD triangle counts | **measured** (fixture + living room; chains stop honestly when simplification stalls) |
+| instancing dedup ratio on a real scene | **measured** (living room: 55 templates / 110 instances, 2.07× file shrink with all LODs aboard) |
+| delta size vs full file | **measured** (fixture 608 B / 0.79 %; living room 629 B / 0.0014 %; byte-identical cross-machine) |
+| compile wall clock, 1 vs 14 jobs on the Thor | **measured** (6.74 s vs 8.06 s — jobs 14 *slower*: one 1.77 M-tri shell template is the serial tail; measurements.md §4) |
+| NVENC filmstrip encode | **measured** (h264 0.415 s / hevc 0.230 s for 90 frames at load ~60; byte-identical re-runs; av1 = no) |
+| KTX2/Basis textures | designed (the exporter stall makes the colour pipeline the prerequisite; toktx needs Casey's OK) |
+| GPU (Warp) simplification | designed + falsifier named (§2.2) — and §4 gives it its reason: the shell template is the compile |
+| zero-copy resident-scene export | designed; the seam it removes is measured (16 s generation vs a glTF *file* export that the stock exporter can't even finish on these materials — §1.1) |
+| viewer on the ProArt's Chrome | **measured headless**: WebGPU has no adapter under WSL2 headless; the WebGL2 (SwiftShader) fallback engages and the badge reports it; both demo loops screenshotted. WebGPU on desktop Chrome = two-minute check for Casey |
 
 Numbers live in `docs/measurements.md`, each with the box's state beside it.
