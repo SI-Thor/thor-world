@@ -25,6 +25,12 @@ node server.mjs [path/to/build] --port 8787
 # screenshot mode: ?autodemo=4000 applies the delta 4 s after load (no SSE wait)
 ```
 
+## Test
+
+```bash
+node --test viewer/test/server.test.mjs   # from the repo root: the boot-at-a-full-world regression (8d58b19)
+```
+
 ## What it proves, and what it doesn't
 
 - **Proves:** the compiled world file renders in a stock browser; a
