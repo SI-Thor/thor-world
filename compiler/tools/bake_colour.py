@@ -99,7 +99,6 @@ def setup_cycles(device: str, samples: int = 1) -> dict:
     scene.cycles.samples = samples
     scene.cycles.use_adaptive_sampling = False
     scene.cycles.seed = 1
-    scene.cycles_threads = None  # CPU device: all cores (we are under the lock)
     return used
 
 
@@ -130,7 +129,7 @@ def xatlas_uv(mesh, name: str, cache_dir: Path | None) -> dict:
             loop_uvs = z["loop_uvs"]
     else:
         atlas = xatlas.Atlas()
-        atlas.add_mesh(verts, tris.reshape(-1, 3))
+        atlas.add_mesh(verts.reshape(-1, 3), tris.reshape(-1, 3))
         atlas.generate()
         _, indices, uvs = atlas.get_mesh(0)
         # output triangle k == input triangle k; corner j of triangle i takes
@@ -473,7 +472,8 @@ def main() -> int:
     report["cycles"] = used
     log(f"cycles device: {used}")
 
-    prep_uvs(objects, args.uv, report, out / "uv_cache")
+    # the xatlas cache is shared by every mode/run of this pipeline
+    prep_uvs(objects, args.uv, report, out.parent / "uv_cache")
     log(f"uv ready ({report['uv']['mode']}: {report['uv']['count']} in {report['uv']['seconds']} s)"
         + (f" [{report['uv'].get('hits', 0)} cached]" if report["uv"]["mode"] == "xatlas" else ""))
 
