@@ -86,15 +86,23 @@ async function loadWorld(manifest) {
     const half = node.scale;
     const center = node.translation;
     const instAcc = node.extensions.EXT_mesh_gpu_instancing.attributes;
-
-    const t = new Float32Array(await readAccessorBytes(json, bin, json.accessors[instAcc.TRANSLATION]));
-    let q = new Float32Array(instAcc.ROTATION !== undefined
-      ? await readAccessorBytes(json, bin, json.accessors[instAcc.ROTATION]) : []);
-    if (q.length === 0) { q = new Float32Array(t.length / 3 * 4); for (let i = 3; i < q.length; i += 4) q[i] = 1; }
-    let s = new Float32Array(instAcc.SCALE !== undefined
-      ? await readAccessorBytes(json, bin, json.accessors[instAcc.SCALE]) : []);
-    if (s.length === 0) { s = new Float32Array(t.length); s.fill(1); }
     const count = json.accessors[instAcc.TRANSLATION].count;
+
+    // decoded views arrive as bytes — re-view them as the accessor's type
+    const asTyped = async (acc, Type, n) => {
+      const buf = await readAccessorBytes(json, bin, acc);
+      return new Type(buf.buffer, buf.byteOffset, acc.count * n);
+    };
+
+    const t = await asTyped(json.accessors[instAcc.TRANSLATION], Float32Array, 3);
+    let q = instAcc.ROTATION !== undefined
+      ? await asTyped(json.accessors[instAcc.ROTATION], Float32Array, 4)
+      : new Float32Array(count * 4);
+    if (instAcc.ROTATION === undefined) for (let i = 3; i < q.length; i += 4) q[i] = 1;
+    let s = instAcc.SCALE !== undefined
+      ? await asTyped(json.accessors[instAcc.SCALE], Float32Array, 3)
+      : new Float32Array(count * 3);
+    if (instAcc.SCALE === undefined) s.fill(1);
 
     // one geometry per LOD — real simplified meshes, dequantized to metres
     const lodGeoms = [];
@@ -246,6 +254,13 @@ async function boot() {
   renderer = new WebGPURenderer({ canvas: $('gl'), antialias: true });
   await renderer.init();
   renderer.toneMapping = ACESFilmicToneMapping;
+  const sizeRenderer = () => {
+    renderer.setSize(innerWidth, innerHeight);
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+  };
+  sizeRenderer();
+  addEventListener('resize', sizeRenderer);
   const backend = renderer.backend?.isWebGPUBackend ? 'WebGPU' : 'WebGL2';
   const chip = $('backend');
   chip.textContent = `backend: ${backend}`;
@@ -266,6 +281,8 @@ async function boot() {
   orbit.dist = Math.min(60, Math.max(4, ...[...state.templates.values()].map((r) => r.radius * 2.5)));
 
   subscribe();
+  // dev introspection handle (HUD screenshots, console poking)
+  window.worldStream = { renderer, scene, camera, state, orbit };
   if (AUTODEMO_MS !== null && Number.isFinite(AUTODEMO_MS)) {
     setTimeout(async () => {
       const payload = await (await fetch(`/api/scene?since_version=${state.head}`)).json();
