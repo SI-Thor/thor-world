@@ -10,10 +10,13 @@ Three token classes, one per door the core opens to this server
 * the **panel** token is read-only — every resource read and the event
   stream.
 
-The actor behind each token is the author the core's audit log records.
-The defaults are the development tokens of a fresh ``$BUILDER_HOME``
-(`core.config.default_tokens`); a real deployment issues per-agent tokens
-and names them here.
+The owner and character tokens are **per-agent tokens**: they carry an
+``agent`` claim that lands on every audit row they write —
+``{kind, id, via, agent}`` — so the core's log answers "which agent acted
+for whom" from the row alone. The server holds no agent name of its own;
+authorship is read back from the log, never stamped here. The defaults
+are the per-agent development tokens of a fresh ``$BUILDER_HOME``
+(``core.config.default_tokens``); a real deployment issues its own.
 """
 
 from __future__ import annotations
@@ -33,16 +36,14 @@ def _env(name: str, default: str) -> str:
 class Settings:
     #: Where the core's HTTP API listens (``uvicorn core.api:app``).
     core_url: str
-    #: Owner token — /v1/call, confirm, answer (the owner's doors).
+    #: Owner token (per-agent: actor casey, agent claim) — /v1/call,
+    #: confirm, answer (the owner's doors).
     owner_token: str
-    #: Character token — /v1/vocab/call, /v1/predictions/seal, /v1/tasks.
+    #: Character token (per-agent: actor prop-maker, agent claim) —
+    #: /v1/vocab/call, /v1/predictions/seal, /v1/tasks.
     character_token: str
     #: Panel token — reads and the SSE stream; never writes.
     panel_token: str
-    #: The agent's own name, shown in every tool result beside the actor
-    #: the core recorded (the audit author is the token's actor; the agent
-    #: identity rides here because the core has no agent token class yet).
-    agent_name: str
     #: How long a one-shot SSE backlog read may take, seconds.
     sse_read_timeout: float = 2.5
     #: Stop an SSE backlog read after this many quiet seconds past data.
@@ -52,10 +53,11 @@ class Settings:
     def from_env(cls) -> "Settings":
         return cls(
             core_url=_env("BUILDER_CORE_URL", DEFAULT_CORE_URL).rstrip("/"),
-            owner_token=_env("WORLD_MCP_OWNER_TOKEN", "dev-token-casey"),
-            character_token=_env("WORLD_MCP_CHARACTER_TOKEN", "dev-token-propmaker"),
+            owner_token=_env("WORLD_MCP_OWNER_TOKEN",
+                             "dev-token-casey-world-mcp"),
+            character_token=_env("WORLD_MCP_CHARACTER_TOKEN",
+                                 "dev-token-props-world-mcp"),
             panel_token=_env("WORLD_MCP_PANEL_TOKEN", "dev-token-panel"),
-            agent_name=_env("WORLD_MCP_ACTOR", "world-mcp-agent"),
             sse_read_timeout=float(_env("WORLD_MCP_SSE_TIMEOUT", "2.5")),
             sse_quiet_seconds=float(_env("WORLD_MCP_SSE_QUIET", "0.35")),
         )

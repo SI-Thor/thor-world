@@ -43,10 +43,12 @@ BUILDER_CORE_URL=http://thor-lan:8000 \
                                           # the ProArt's agents reach the Thor
 ```
 
-Environment: `BUILDER_CORE_URL`, the three token classes
+Environment: `BUILDER_CORE_URL` and the three token classes
 (`WORLD_MCP_OWNER_TOKEN` / `WORLD_MCP_CHARACTER_TOKEN` /
-`WORLD_MCP_PANEL_TOKEN`, defaulting to a fresh `$BUILDER_HOME`'s dev
-tokens) and `WORLD_MCP_ACTOR` (the agent's own name). A standalone seeded
+`WORLD_MCP_PANEL_TOKEN` — the owner and character tokens are **per-agent
+tokens**, whose `agent` claim lands on every audit row they write, so the
+log itself answers "which agent acted for whom"; the defaults are a fresh
+`$BUILDER_HOME`'s per-agent dev tokens). A standalone seeded
 core for trying it: `.venv/bin/python demo/core_host.py`.
 
 **Tests + demo:**

@@ -252,7 +252,8 @@ def main() -> int:
     home = args.home or Path(tempfile.mkdtemp(prefix="builder-home-"))
     core = build_core(home)
     print(f"$BUILDER_HOME={home}  core on http://127.0.0.1:{args.port} "
-          f"(tokens: dev-token-casey / dev-token-propmaker / dev-token-panel)")
+          f"(tokens: dev-token-casey-world-mcp / dev-token-props-world-mcp"
+          f" / dev-token-panel)")
 
     import uvicorn
 

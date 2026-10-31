@@ -9,9 +9,11 @@ cursor. The rules this server keeps, in the core's own spirit:
   job, a filed work order. Refusals from the core are surfaced verbatim —
   the "I can't do rope yet" moment is the product, not an error to work
   around.
-* **Everything is recorded with its author.** Each tool names, in its
-  result, the actor the core's audit log recorded (the token's actor) and
-  the agent that called it.
+* **Everything is recorded with its author.** The server's owner and
+  character tokens are per-agent tokens: the ``agent`` claim rides every
+  audit row they write — ``{kind, id, via, agent}`` — and each tool
+  reports the author the *log* recorded (the actor, and the agent claim
+  on it), never a name of the server's own.
 * **Sealed before rendered.** ``propose_recipe_edit`` seals the prediction
   first (§5.1); the render it predicts does not exist yet.
 * **The world changes, the agent hears about it.** A single SSE
@@ -68,7 +70,8 @@ Rules of the house:
 - A refusal from a door is honest information ("word is coming-soon",
   "param outside the schema"). Report it; do not retry around it.
 - Every action you take is in the core's audit log under the actor whose
-  token this server holds.
+  token this server holds, with the agent claim naming you — the row
+  alone answers "which agent acted for whom".
 """
 
 
@@ -124,7 +127,7 @@ def build_server(settings: Settings | None = None,
         # connection every subscriber is served from.
         async with anyio.create_task_group() as tg:
             tg.start_soon(_watch_world, core, bus, dirty)
-            yield {"core": settings.core_url, "agent": settings.agent_name}
+            yield {"core": settings.core_url}
         await core.aclose()
 
     mcp = MCPServer(
@@ -136,7 +139,7 @@ def build_server(settings: Settings | None = None,
         subscriptions=bus,
     )
     _register_resources(mcp, core, dirty)
-    _register_tools(mcp, core, settings, dirty)
+    _register_tools(mcp, core, dirty)
     return mcp
 
 
@@ -272,13 +275,35 @@ def _register_resources(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> 
 # ------------------------------------------------------------------ tools
 
 
-def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
-                    dirty: DirtyState) -> None:
-    def author_note(recorded: Any) -> dict:
+def _register_tools(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> None:
+    def author_note(actor: dict | None = None,
+                    *, fallback: str | None = None) -> dict:
+        """The author the core's log recorded, read back off the row.
+
+        The audit row's actor is ``{kind, id, via, agent}`` — the actor the
+        token acted for and, on a per-agent token's rows, the agent that
+        acted. The server holds no agent name of its own to stamp; where
+        only the actor's id reached the response (a task row), the claim
+        comes from the log or the note degrades to the id.
+        """
         return {
-            "recorded_as": recorded,
-            "agent": settings.agent_name,
+            "recorded_as": (actor or {}).get("id") or fallback,
+            "agent": (actor or {}).get("agent"),
         }
+
+    async def task_author(task_id: str | None) -> dict | None:
+        """The audit row that filed a task: the task row names only the
+        actor's id, so the agent claim is read from the log."""
+        if not task_id:
+            return None
+        try:
+            events = await core.read_events(["night.task.created"])
+        except CoreError:
+            return None  # the note degrades; the task itself stands
+        for ev in reversed(events):
+            if ((ev.get("payload") or {}).get("task") or {}).get("id") == task_id:
+                return ev.get("actor")
+        return None
 
     async def main_branch() -> dict | None:
         branches = await core.get("/v1/branches")
@@ -327,7 +352,7 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
         if status:
             words = [w for w in words if w.get("status") == status]
         vocab["words"] = words
-        vocab.update(author_note("core vocab projection (read-only)"))
+        vocab["note"] = "core vocab projection (read-only)"
         return vocab
 
     @mcp.tool(
@@ -343,8 +368,8 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
             "slate": await core.get("/v1/slate"),
             "budget": await core.get("/v1/budget"),
         }
-        out.update(author_note("the slate is read-only here; starting or "
-                               "stopping the night is the owner's door"))
+        out["note"] = ("the slate is read-only here; starting or "
+                       "stopping the night is the owner's door")
         return out
 
     # ---------------------------------------------------------- the sealed-bet loop
@@ -398,7 +423,7 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
             "edit": call.get("edit"),
             "committed": call.get("committed", False),
             "version": call.get("version"),
-            **author_note((call.get("edit") or {}).get("author", {}).get("id")),
+            **author_note((call.get("edit") or {}).get("author")),
         }
         return result
 
@@ -440,7 +465,8 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
             "render_spec": {"rung": rung, "seed": seed,
                             "entry_paths": entry_paths},
             "note": "queued on the slate/night lane; the engine seat renders it",
-            **author_note(row.get("author")),
+            **author_note(await task_author(row.get("id")),
+                          fallback=row.get("author")),
         }
 
     # ---------------------------------------------------------- work orders
@@ -482,8 +508,7 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
             result = await core.post("/v1/call", body, principal="owner")
         except CoreError as exc:
             raise ToolError(_refusal(exc)) from exc
-        filed = ((result.get("draft") or {}).get("filed_by") or {}).get("id")
-        result.update(author_note(filed))
+        result.update(author_note((result.get("draft") or {}).get("filed_by")))
         result["confirm_line"] = (result.get("draft") or {}).get("confirm_line")
         return result
 
@@ -504,17 +529,17 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
         if answer not in ("go", "no", "edit"):
             raise ToolError("answer must be go | no | edit")
         try:
-            # the core answers with the work order record itself, in its new
-            # state (queued | cancelled | refiled)
+            # the core answers with the work order record itself, in its
+            # new state (queued | cancelled | refiled); filed_by is the
+            # audit row's actor — id and agent claim both
             record = await core.post(
                 f"/v1/work-orders/{work_order}/confirm",
                 {"answer": answer, "amendments": amendments},
                 principal="owner", idem_key=idem_key)
         except CoreError as exc:
             raise ToolError(_refusal(exc)) from exc
-        filed_by = record.get("filed_by") if isinstance(record, dict) else None
-        who = filed_by.get("id") if isinstance(filed_by, dict) else None
-        return {"work_order": record, **author_note(who)}
+        return {"work_order": record,
+                **author_note(record.get("filed_by"))}
 
     @mcp.tool(
         name="answer_question",
@@ -532,18 +557,18 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
         except CoreError as exc:
             raise ToolError(_refusal(exc)) from exc
         # the question record carries the answer, not who gave it; the log
-        # has the author (the actor behind the owner token)
-        who = "owner"
+        # has the author (the audit row's actor — id and agent claim)
+        author: dict | None = None
         try:
             events = await core.read_events(["question.answered"])
             ev = next((e for e in reversed(events)
                        if (e.get("subject") or {}).get("entity_id") == question),
                       None)
             if ev:
-                who = (ev.get("actor") or {}).get("id") or who
+                author = ev.get("actor")
         except CoreError:
             pass  # the author note degrades; the answer itself stands
-        return {**result, **author_note(who)}
+        return {**result, **author_note(author, fallback="owner")}
 
     # ---------------------------------------------------------- the night
 
@@ -592,7 +617,8 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
                       "ask_source": row.get("ask_source"),
                       "basis": row.get("ask_basis"),
                       "marked": "[e]" if row.get("ask_basis") == "estimate" else ""},
-            **author_note(row.get("author")),
+            **author_note(await task_author(row.get("id")),
+                          fallback=row.get("author")),
         }
 
     @mcp.tool(
@@ -612,7 +638,7 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
             "events": events,
             "push": "subscribe to the world://dirty resource; the server "
                     "publishes an update the moment the core's log moves",
-            **author_note("a read; the core records no actor for it"),
+            "note": "a read; the core records no actor for it",
         }
 
 

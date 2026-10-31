@@ -189,10 +189,10 @@ def _mcp_http(core_url: str):
     from world_mcp.config import Settings
     from world_mcp.server import build_server
 
-    settings = Settings(core_url=core_url, owner_token="dev-token-casey",
-                        character_token="dev-token-propmaker",
-                        panel_token="dev-token-panel",
-                        agent_name="http-test-agent")
+    settings = Settings(core_url=core_url,
+                        owner_token="dev-token-casey-world-mcp",
+                        character_token="dev-token-props-world-mcp",
+                        panel_token="dev-token-panel")
     app = build_server(settings).streamable_http_app()
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1",

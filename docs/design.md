@@ -68,9 +68,12 @@ endpoint with exactly one token class; each resource composes reads.
 **Authorship.** The actor the core records is the token's actor (§4.1:
 a token is an identity). The server holds three token classes — owner
 (`/v1/call` and confirms), character (vocab calls, seals, slate work),
-panel (reads and the stream) — and stamps every tool result with both the
-core's `recorded_as` and its own `agent` name, so "who did this" is always
-a two-part answer: the actor the log recorded, and the agent that acted.
+panel (reads and the stream) — and the owner and character tokens are
+**per-agent tokens**: their `agent` claim lands on every audit row they
+write, `{kind, id, via, agent}`, so the log itself answers "which agent
+acted for whom" from the row alone. Each tool reports the author the log
+recorded — the actor and the claim on it — and the server holds no agent
+name of its own to stamp.
 `tests/test_tools.py::test_the_author_is_on_every_write` checks the log,
 not the tool's say-so.
 

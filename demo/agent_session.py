@@ -105,7 +105,7 @@ async def agent_session(core_url: str, host_core) -> None:
         wo = confirmed["work_order"]
         print(f"work order   : {wo['id']} -> {wo['state']}")
         print(f"recorded_as  : {confirmed['recorded_as']} "
-              f"(agent: {confirmed['agent']})")
+              f"(agent: {confirmed['agent']} — the row's own answer)")
 
         say("the ledger", "everything the agent did is in the core's audit "
                           "log, with its author — checked at the log itself.")
@@ -113,7 +113,8 @@ async def agent_session(core_url: str, host_core) -> None:
         # tool's say-so.
         for ev in host_core.store.events_since(
                 0, types=["wo.filed", "wo.confirmed"]):
-            print(f"  seq {ev.seq:>3}  {ev.type:<14} actor={ev.actor.id}")
+            print(f"  seq {ev.seq:>3}  {ev.type:<14} "
+                  f"actor={ev.actor.id} agent={ev.actor.agent}")
 
         say("the world answers back",
             "one typed vocabulary edit — sealed prediction first — and the "
