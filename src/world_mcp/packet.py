@@ -15,6 +15,10 @@ resource shows the world as it was last seen, not an empty room.
 
 from __future__ import annotations
 
+from typing import Any
+
+import anyio
+
 from .client import CoreClient
 
 #: The bounds the spec pins for the packet's history halves (§1.4.1); the
@@ -100,18 +104,32 @@ def _main_branch(branches: dict) -> dict | None:
 
 
 async def _gather(core: CoreClient):
-    """Read the six doors, one at a time; any failure fails the whole read
+    """Read the six doors concurrently; any failure fails the whole read
     loudly rather than half-composing a packet.
 
-    Sequential on purpose: the core serves its doors from a threadpool over
-    one SQLite connection, and two store-reading requests in the same tick
-    can collide in the store (a rare 500 we saw in testing). The reads are
-    cheap — the SSE backlog dominates the packet's wall clock either way.
+    Concurrent on purpose, now that the core can take it. An earlier race
+    made this server take the doors one at a time: the core served its
+    store-reading GETs from one SQLite connection across the threadpool,
+    and two reads in the same tick could collide into a 500. The core
+    closed that race at the source — every read takes the one lock the
+    writes held (builder-ide core-doors 180ee04) — so the fan-out is back.
+    The SSE backlog read still dominates the packet's wall clock; the five
+    JSON GETs ride beside it, and the whole packet reads one moment.
     """
-    slate = await core.get("/v1/slate")
-    budget = await core.get("/v1/budget")
-    vocab = await core.get("/v1/vocab")
-    branches = await core.get("/v1/branches")
-    wos = await core.get("/v1/work-orders")
-    events = await core.read_events(HISTORY_TYPES)
-    return slate, budget, vocab, branches, wos, events
+    out: dict[str, Any] = {}
+
+    async with anyio.create_task_group() as tg:
+
+        async def read(key: str, door) -> None:
+            out[key] = await door()
+
+        tg.start_soon(read, "slate", lambda: core.get("/v1/slate"))
+        tg.start_soon(read, "budget", lambda: core.get("/v1/budget"))
+        tg.start_soon(read, "vocab", lambda: core.get("/v1/vocab"))
+        tg.start_soon(read, "branches", lambda: core.get("/v1/branches"))
+        tg.start_soon(read, "wos", lambda: core.get("/v1/work-orders"))
+        tg.start_soon(read, "events",
+                      lambda: core.read_events(HISTORY_TYPES))
+
+    return (out["slate"], out["budget"], out["vocab"], out["branches"],
+            out["wos"], out["events"])

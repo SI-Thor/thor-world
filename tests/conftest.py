@@ -105,6 +105,23 @@ class _AsyncClient:
         session = self._holder["session"]
         return self._run(session.call_tool(name, arguments or {}))
 
+    def call_all(self, name, argsets):
+        """Several calls in flight on one session, answers as a list.
+
+        One MCP session multiplexes requests by id, so this is the shape a
+        chatty agent (or several agents behind one server) actually makes —
+        the concurrent-read hammer's muzzle.
+        """
+        import asyncio
+
+        session = self._holder["session"]
+
+        async def together():
+            return list(await asyncio.gather(
+                *(session.call_tool(name, args) for args in argsets)))
+
+        return self._run(together())
+
     def read(self, uri):
         session = self._holder["session"]
         return self._run(session.read_resource(uri))
