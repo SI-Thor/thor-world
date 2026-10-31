@@ -147,7 +147,7 @@ become **tiles**, the options the Thor's local decision models choose
 between in the moment; every play's outcome is recorded, and the
 decision models learn from the wins and the losses.
 
-The tiles branch (in progress on builder-ide) will need no new kind of
+The tiles branch (merged on builder-ide) will need no new kind of
 client. A tile author is just another agent at this server, and the
 loop already exists:
 
@@ -188,33 +188,53 @@ about the real stack. `demo/agent_session.py` is the same walk, printed:
 a scripted agent session (no real LLM) from terse request to queued
 order to the ledger naming its author.
 
-## 8. Open questions for Casey
+## 8. The questions this server named for Casey — answered
 
-1. **Agent identity at the core.** Today the server's own name rides in
-   tool results beside the actor, because §4.1's token classes carry an
-   actor but not an agent. Per-agent tokens (an `agent` claim inside the
-   token, one actor, many agents) would move that into the audit log
-   where it belongs.
-2. **The recipe document has no read door.** `world://recipe` serves
-   branches, hashes and history; the document itself is a
-   content-addressed blob (and `/v1/world/scene` answers 501 until the
-   compiler lands). A `GET /v1/recipe/{version}` door would let an agent
-   diff recipes without a filesystem on the Thor.
-3. **Render requests have no engine behind them yet** (the rungs are
-   scripted stand-ins engine-side), so `request_render` honestly returns
-   the queue row, not a preview. When the warm scene server lands
-   (§1.9), the same tool should return the artifact ref too — the tool's
-   shape is ready for it.
-4. **Budget writes.** An agent can read the night's plan and price but
-   cannot shape the slate (chips ride `/v1/tasks` for the Companion
-   character). If cloud authors should file *plan* intentions and not
-   only genbatches, `/v1/tasks` needs a kind for it — a one-line core
-   change, mirrored here as one tool.
-5. **Concurrent reads on the store.** Under load we drew a rare 500 from
-   the core's doors — `sqlite3.InterfaceError` in `core.store`'s
-   `count_events` — when two store-reading GETs landed in the threadpool
-   in the same tick (the store serves endpoints from FastAPI's threads
-   over one SQLite connection). This server now takes the doors strictly
-   one at a time, so it never races the store; the ProArt client and any
-   other concurrent caller still could. A lock (or a per-thread
-   connection) around the store's reads would close it for everyone.
+Building this server against the doors found four gaps; each was written
+up here as an open question, and builder-ide's `core-doors` work answered
+all four (its `docs/design/core-doors.md` maps the answers to these items
+commit by commit). They stand here as they landed, with what each retired
+on this side:
+
+1. **Agent identity at the core** — answered (`481ff5d`): a token entry
+   may carry an `agent` claim, and it lands on every audit row the token
+   writes — `{kind, id, via, agent}` — so the log alone answers "which
+   agent acted for whom". The server's own stamping (`WORLD_MCP_ACTOR`,
+   `Settings.agent_name`) is retired; its owner and character tokens are
+   the per-agent dev tokens, and each tool reports the author read back
+   off the row. Recorded, never gated: a plain token behaves exactly as
+   §4.1 always said.
+2. **The recipe document has no read door** — answered (`2494e18`):
+   `GET /v1/recipe/{version}` serves the document from its
+   content-addressed blob, verified against `root_hash` on read, and with
+   `?against=<base>` the canonical op list base→version. Served here as
+   the resource template `world://recipe/{version}{?against}`; the static
+   `world://recipe` points at it instead of apologising for a missing
+   door. An agent diffs recipes without a filesystem on the Thor.
+3. **Render requests have no engine behind them yet** — still open
+   engine-side: the rungs are scripted stand-ins, so `request_render`
+   honestly returns the queue row, not a preview. When the warm scene
+   server lands (§1.9), the same tool should return the artifact ref too
+   — the tool's shape is ready for it.
+4. **Budget writes / plan intentions** — answered (`b95c3ea`): the
+   `plan.intention` kind on `/v1/tasks`. An agent proposes to the night's
+   slate, priced by the cost model like everything else, the band the
+   proposal's own footprint — a slate row and the owner's decision on it,
+   zero GPU, the attention estimate marked `[e]`; the work it may seed is
+   priced by its own kind when the night runs it. Mirrored here
+   one-for-one as `propose_plan_intention`. Starting the night stays the
+   owner's door.
+5. **Concurrent reads on the store** — answered at the source
+   (`180ee04`): every read of the store's shared connection takes the one
+   lock the writes held, chosen by measurement — per-thread connections
+   were slower at every concurrency *and* broke callers that read their
+   own uncommitted writes inside a batch. This server's workaround
+   (taking the six packet doors one at a time) is retired; the fan-out is
+   back, and `tests/test_concurrency.py` keeps a hammer on the seam from
+   both sides — a regression of the lock, or a race of this server's own,
+   fails loudly.
+
+Still open, small: §8.3 above (the engine behind the render rungs — the
+one answer that lives outside the core); the tiles doors of §6, when that
+design lands them; and a name — the repo is still "thor-world (working
+name)".

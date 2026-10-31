@@ -11,8 +11,9 @@ It fills the role of the private companion repo of the `maquette` Infinigen fork
 
 An agent's only way into a builder-ide world. The server is a **pure client
 of the core's HTTP API** — it never imports builder-ide, never touches the
-ledger, and every write goes through one of the core's typed doors with the
-token's actor recorded as its author (`docs/design.md` is the design note).
+ledger, and every write goes through one of the core's typed doors, its
+per-agent token putting both the actor and the agent on the audit row
+(`docs/design.md` is the design note).
 
 **Six resources, plus one template:** `world://context` (the §1.4 context
 packet: selection, recent history, conversation labels, project state, the
