@@ -466,8 +466,11 @@ def main() -> int:
     report["open_seconds"] = round(time.perf_counter() - t0, 3)
     log(f"blend open in {report['open_seconds']} s")
 
-    objects = [o for o in bpy.context.view_layer.objects if o.type == "MESH" and o.data]
+    objects = [o for o in bpy.context.view_layer.objects
+               if o.type == "MESH" and o.data and not o.hide_render and not o.hide_get()]
     report["mesh_objects"] = len(objects)
+    report["skipped_hidden"] = len([o for o in bpy.context.view_layer.objects
+                                    if o.type == "MESH" and (o.hide_render or o.hide_get())])
 
     if args.mode == "uvcheck":
         uv_report = []
