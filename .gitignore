@@ -11,3 +11,6 @@ __pycache__/
 *.sqlite3
 *.log
 node_modules/
+
+# local run artifacts (never committed)
+.local/

@@ -187,8 +187,25 @@ function mat4Decompose(m) { // → {t, q, s}; assumes no shear (glTF static expo
 
 function harvestSource(gltf, bin) {
   // Every mesh primitive in the default scene: geometry, effective material,
-  // world matrix. One item per (node, primitive).
+  // world matrix. One item per (node, primitive). Images referenced by
+  // base-colour textures are harvested too (content-hashed — two materials
+  // pointing at identical bytes share one image on the wire).
   const items = [];
+  const images = new Map(); // image index → {sha256, mimeType, bytes}
+  const imageOf = (gltfMaterial) => {
+    const texIndex = gltfMaterial?.pbrMetallicRoughness?.baseColorTexture?.index;
+    if (texIndex === undefined) return null;
+    const texture = gltf.textures?.[texIndex];
+    if (!texture || texture.source === undefined) return null;
+    const img = gltf.images?.[texture.source];
+    if (!img || img.bufferView === undefined) return null;
+    if (!images.has(texture.source)) {
+      const bv = gltf.bufferViews[img.bufferView];
+      const bytes = bin.subarray(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength);
+      images.set(texture.source, { sha256: sha256(bytes), mimeType: img.mimeType ?? 'image/png', bytes });
+    }
+    return images.get(texture.source).sha256;
+  };
   const sceneIndex = gltf.scene ?? 0;
   const roots = gltf.scenes?.[sceneIndex]?.nodes ?? [];
   const visit = (nodeIndex, parent) => {
@@ -214,7 +231,7 @@ function harvestSource(gltf, bin) {
             return out;
           })()
           : Uint32Array.from({ length: positions.length / 3 }, (_, i) => i);
-        const material = effectiveMaterial(gltf, prim.material);
+        const material = effectiveMaterial(gltf, prim.material, (m) => imageOf(m));
         const h = createHash('sha256');
         h.update(Buffer.from(positions.buffer, positions.byteOffset, positions.byteLength));
         if (normals) h.update(Buffer.from(normals.buffer, normals.byteOffset, normals.byteLength));
@@ -232,25 +249,93 @@ function harvestSource(gltf, bin) {
     }
     for (const child of node.children ?? []) visit(child, world);
   };
-  for (const root of roots) visit(root, null);
-  return items;
-}
+    for (const root of roots) visit(root, null);
+    return { items, images };
+  }
 
-function effectiveMaterial(gltf, materialIndex) {
+function effectiveMaterial(gltf, materialIndex, imageOf = null) {
   if (materialIndex === undefined || materialIndex === null) {
     return { baseColorFactor: [0.8, 0.8, 0.8, 1], metallicFactor: 0, roughnessFactor: 0.9, doubleSided: false };
   }
   const mat = gltf.materials[materialIndex];
   const pbr = mat.pbrMetallicRoughness ?? {};
-  return {
+  const texSha = imageOf ? imageOf(mat) : null;
+  const material = {
     baseColorFactor: (pbr.baseColorFactor ?? [0.8, 0.8, 0.8, 1]).map((v) => +v.toFixed(6)),
     metallicFactor: +(pbr.metallicFactor ?? 1).toFixed(6),
     roughnessFactor: +(pbr.roughnessFactor ?? 1).toFixed(6),
     doubleSided: !!mat.doubleSided,
   };
+  if (texSha !== null) material.baseColorTexture = texSha; // content hash, not an index
+  return material;
 }
 
 // ------------------------------------------------------------------ compile
+
+// Spatial chunking (the serial-tail lever): a template far above the target
+// triangle count is split into contiguous chunks by recursive median split of
+// triangle centroids along the longest bbox axis — a pure function of the
+// geometry, so every job count and machine splits identically. Each chunk
+// simplifies on its own worker with 'LockBorder': the cut edges are open
+// edges, and locked border vertices mean adjacent chunks' LODs still mate
+// (no cracks) at the cost of some reduction near the cuts.
+function splitSpatial(indices, positions, targetTriangles) {
+  const nTri = indices.length / 3;
+  const centroids = new Float64Array(nTri * 3);
+  for (let t = 0; t < nTri; t++) {
+    for (let c = 0; c < 3; c++) {
+      centroids[t * 3 + c] = (positions[indices[t * 3] * 3 + c]
+        + positions[indices[t * 3 + 1] * 3 + c]
+        + positions[indices[t * 3 + 2] * 3 + c]) / 3;
+    }
+  }
+  const chunks = [];
+  const rec = (tris) => {
+    if (tris.length <= targetTriangles || tris.length < 8) { chunks.push(tris); return; }
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (const t of tris)
+      for (let c = 0; c < 3; c++) {
+        if (centroids[t * 3 + c] < min[c]) min[c] = centroids[t * 3 + c];
+        if (centroids[t * 3 + c] > max[c]) max[c] = centroids[t * 3 + c];
+      }
+    let axis = 0;
+    if (max[1] - min[1] > max[axis] - min[axis]) axis = 1;
+    if (max[2] - min[2] > max[axis] - min[axis]) axis = 2;
+    const sorted = Uint32Array.from(tris).sort((a, b) => {
+      const d = centroids[a * 3 + axis] - centroids[b * 3 + axis];
+      return d !== 0 ? (d < 0 ? -1 : 1) : a - b;
+    });
+    const mid = Math.floor(sorted.length / 2);
+    rec(sorted.subarray(0, mid));
+    rec(sorted.subarray(mid));
+  };
+  const all = new Uint32Array(nTri);
+  for (let t = 0; t < nTri; t++) all[t] = t;
+  rec(all);
+  return chunks.map((tris) => {
+    const out = new Uint32Array(tris.length * 3);
+    let o = 0;
+    for (const t of tris) { out[o++] = indices[t * 3]; out[o++] = indices[t * 3 + 1]; out[o++] = indices[t * 3 + 2]; }
+    return out;
+  });
+}
+
+// The quantization frame for a chunked template: one bbox over every vertex
+// its triangles reference — the same set the un-chunked path compacts to.
+function templateFrame(positions, indices) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < indices.length; i++) {
+    const v = indices[i] * 3;
+    for (let c = 0; c < 3; c++) {
+      if (positions[v + c] < min[c]) min[c] = positions[v + c];
+      if (positions[v + c] > max[c]) max[c] = positions[v + c];
+    }
+  }
+  return {
+    center: min.map((m, c) => (m + max[c]) / 2),
+    half: min.map((m, c) => Math.max((max[c] - m) / 2, 1e-9)),
+  };
+}
 
 async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {}) {
   const tTotal = performance.now();
@@ -259,7 +344,9 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
   if (recipe.source?.sha256 && recipe.source.sha256 !== sourceSha) {
     throw new Error(`source sha256 mismatch: recipe pins ${recipe.source.sha256}, file is ${sourceSha}`);
   }
-  const harvest = harvestSource(gltf, bin);
+  const harvested = harvestSource(gltf, bin);
+  const harvest = harvested.items;
+  const sourceImages = harvested.images;
   const byId = new Map(harvest.map((item) => [item.id, item]));
   const lodPolicy = recipe.lod_policy ?? DEFAULT_LODS;
   if (phaseTimings) phaseTimings.parse_source = performance.now() - t0;
@@ -282,18 +369,53 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
   const sortedTemplates = [...templates.values()].sort((a, b) => (a.hash < b.hash ? -1 : 1));
   if (phaseTimings) phaseTimings.group_templates = performance.now() - t1;
 
-  // Per-template work: LOD chains, quantization, meshopt encoding.
+  // Per-template work: LOD chains, quantization, meshopt encoding. Templates
+  // far above the chunk policy's triangle threshold are split spatially so
+  // the simplification fans out (the round-1 serial tail); chunk results are
+  // stitched back per template before assembly.
   const t2 = performance.now();
-  const work = sortedTemplates.map((tpl) => ({
-    hash: tpl.hash,
-    positions: tpl.source.positions,
-    normals: tpl.source.normals,
-    uvs: tpl.source.uvs,
-    indices: tpl.source.indices,
-    instances: tpl.entries.map((e) => e.params),
-    policy: lodPolicy,
-  }));
+  const chunkPolicy = lodPolicy.chunk ?? null;
+  const work = [];
+  const templateOfWork = [];
+  sortedTemplates.forEach((tpl, ti) => {
+    const src = tpl.source;
+    if (chunkPolicy && src.indices.length / 3 > chunkPolicy.above_triangles) {
+      const chunks = splitSpatial(src.indices, src.positions, chunkPolicy.target_triangles);
+      const frame = templateFrame(src.positions, src.indices);
+      chunks.forEach((indices) => {
+        work.push({
+          hash: tpl.hash, chunked: true, frame,
+          positions: src.positions, normals: src.normals, uvs: src.uvs,
+          indices, instances: [], policy: lodPolicy,
+        });
+        templateOfWork.push(ti);
+      });
+    } else {
+      work.push({
+        hash: tpl.hash,
+        positions: src.positions, normals: src.normals, uvs: src.uvs,
+        indices: src.indices,
+        instances: tpl.entries.map((e) => e.params),
+        policy: lodPolicy,
+      });
+      templateOfWork.push(ti);
+    }
+  });
   const results = jobs > 1 ? await runInWorkers(work, jobs) : work.map(processTemplate);
+  const templateResults = [];
+  {
+    const byTemplate = new Map();
+    work.forEach((item, i) => {
+      const ti = templateOfWork[i];
+      if (item.chunked) {
+        if (!byTemplate.has(ti)) byTemplate.set(ti, []);
+        byTemplate.get(ti).push(results[i]);
+      } else {
+        templateResults[ti] = results[i];
+      }
+    });
+    for (const [ti, chunks] of byTemplate) templateResults[ti] = stitchChunks(sortedTemplates[ti], chunks);
+  }
   if (phaseTimings) phaseTimings.lod_quantize_encode = performance.now() - t2;
 
   // Assemble the glTF document — deterministic order: templates sorted by hash.
@@ -306,6 +428,8 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
   const nodes = [];
   const materialsOut = [];
   const materialIndex = new Map();
+  const usedImages = new Map(); // image sha → {index in images[], bytes, mimeType}
+  const textures = [];          // one texture per image (single repeat sampler)
 
   const pushCompressed = (encoded, decodedByteLength, mode, stride) => {
     const viewIndex = bufferViews.length;
@@ -321,6 +445,18 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
     return viewIndex;
   };
 
+  // image bytes (PNG/JPEG) ride uncompressed in their own 4-byte-aligned views
+  const pushRaw = (bytes) => {
+    const viewIndex = bufferViews.length;
+    bufferViews.push({ byteOffset: binLen, byteLength: bytes.length });
+    const copy = Buffer.from(bytes);
+    binaryChunks.push(copy);
+    const pad = (4 - (copy.length % 4)) % 4;
+    if (pad) binaryChunks.push(Buffer.alloc(pad));
+    binLen += copy.length + pad;
+    return viewIndex;
+  };
+
   const pushAccessor = (viewIndex, componentType, type, count, normalized, minMax = null) => {
     const acc = { bufferView: viewIndex, componentType, type, count };
     if (normalized) acc.normalized = true;
@@ -332,11 +468,26 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
   const materialFor = (material) => {
     const key = canonicalJson(material);
     if (!materialIndex.has(key)) {
+      let baseColorTexture;
+      if (material.baseColorTexture) {
+        if (!usedImages.has(material.baseColorTexture)) {
+          const img = sourceImages instanceof Map
+            ? [...sourceImages.values()].find((x) => x.sha256 === material.baseColorTexture)
+            : null;
+          if (!img) throw new Error(`material references unknown image ${material.baseColorTexture.slice(0, 12)}…`);
+          usedImages.set(material.baseColorTexture, {
+            index: usedImages.size, bytes: img.bytes, mimeType: img.mimeType,
+          });
+          textures.push({ sampler: 0, source: usedImages.size - 1 });
+        }
+        baseColorTexture = { index: usedImages.get(material.baseColorTexture).index };
+      }
       materialIndex.set(key, materialsOut.length);
       materialsOut.push({
         name: `mat_${materialsOut.length}`,
         pbrMetallicRoughness: {
           baseColorFactor: material.baseColorFactor,
+          ...(baseColorTexture ? { baseColorTexture } : {}),
           metallicFactor: material.metallicFactor,
           roughnessFactor: material.roughnessFactor,
         },
@@ -351,7 +502,7 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
   let encodedBytes = 0;
   for (let ti = 0; ti < sortedTemplates.length; ti++) {
     const tpl = sortedTemplates[ti];
-    const res = results[ti];
+    const res = templateResults[ti];
     const matIndex = materialFor(tpl.material);
     const lodTable = [];
     for (const lod of res.lods) {
@@ -397,6 +548,10 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
     });
     manifestTemplates.push({ hash: tpl.hash, node: nodes.length - 1, lods: lodTable, entryIds: tpl.entries.map((e) => e.id) });
   }
+  // image bytes must land in the BIN chunk before it is concatenated
+  const imageViews = textures.length
+    ? [...usedImages.values()].map((img) => ({ bufferView: pushRaw(img.bytes), mimeType: img.mimeType }))
+    : null;
   encodedBytes = binLen;
   const binChunk = Buffer.concat(binaryChunks);
   const recipeSha = sha256(Buffer.from(canonicalJson(recipe)));
@@ -419,8 +574,9 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
     scenes: [{ name: recipe.world, nodes: nodes.map((_, i) => i) }],
     extensionsUsed: ['EXT_mesh_gpu_instancing', 'EXT_meshopt_compression', 'KHR_mesh_quantization'],
     extensionsRequired: ['EXT_meshopt_compression', 'KHR_mesh_quantization'],
-    materials: materialsOut,
-    meshes,
+    ...(materialsOut.length ? { materials: materialsOut } : {}),
+    ...(imageViews ? { images: imageViews, samplers: [{ wrapS: 10497, wrapT: 10497 }], textures } : {}),
+    ...(meshes.length ? { meshes } : {}),
     nodes,
     accessors,
     bufferViews,
@@ -450,6 +606,78 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
   return { glb, manifest, phaseTimings };
 }
 
+// meshopt-encode one processed LOD's buffers. Runs inside workers (normal
+// templates) and on the main thread (stitched chunked templates) — hence a
+// top-level function embedded into the worker source too.
+function encodeLodViews(lod) {
+  lod.positionView = MeshoptEncoder.encodeVertexBuffer(bytesOf(lod.qPos), lod.vertexCount, 8);
+  lod.normalView = lod.qNrm ? MeshoptEncoder.encodeVertexBuffer(bytesOf(lod.qNrm), lod.vertexCount, 4) : null;
+  lod.uvView = lod.qUv ? MeshoptEncoder.encodeVertexBuffer(bytesOf(lod.qUv), lod.vertexCount, lod.uvIsFloat ? 8 : 4) : null;
+  lod.indicesView = MeshoptEncoder.encodeIndexBuffer(lod.indexBytes, lod.indexCount, lod.indicesAre32 ? 4 : 2);
+  lod.qPos = null; lod.qNrm = null; lod.qUv = null; lod.indexBytes = null; // keep the wire small
+  return lod;
+}
+
+// Fold a chunked template's per-chunk LODs back into one template result:
+// level-by-level concatenation with per-chunk index offsets (the shared
+// quantization frame makes the buffers composable), the chain depth being
+// the shallowest chunk's (chains stop per chunk), worldError the max.
+function stitchChunks(tpl, chunkResults) {
+  const depth = Math.min(...chunkResults.map((r) => r.lods.length));
+  const lods = [];
+  for (let level = 0; level < depth; level++) {
+    let vertexCount = 0; let indexCount = 0;
+    for (const r of chunkResults) { vertexCount += r.lods[level].vertexCount; indexCount += r.lods[level].indexCount; }
+    const first = chunkResults[0].lods[level];
+    const hasNrm = chunkResults.every((r) => r.lods[level].qNrm !== null);
+    const hasUv = chunkResults.every((r) => r.lods[level].qUv !== null);
+    if (hasUv && chunkResults.some((r) => r.lods[level].uvIsFloat !== first.uvIsFloat)) {
+      throw new Error('chunked template: mixed uv quantization across chunks');
+    }
+    const indicesAre32 = vertexCount - 1 > 65535;
+    const qPos = new Int16Array(vertexCount * 4);
+    const qNrm = hasNrm ? new Int8Array(vertexCount * 4) : null;
+    const qUv = hasUv ? new Float32Array(0) : null;
+    const uvIsFloat = first.uvIsFloat;
+    const realQUv = hasUv ? (uvIsFloat ? new Float32Array(vertexCount * 2) : new Uint16Array(vertexCount * 2)) : null;
+    const indexBytes = indicesAre32 ? new Uint32Array(indexCount) : new Uint16Array(indexCount);
+    const min = [32767, 32767, 32767], max = [-32767, -32767, -32767];
+    let worldError = 0; let vOff = 0; let iOff = 0;
+    for (const r of chunkResults) {
+      const l = r.lods[level];
+      qPos.set(l.qPos, vOff * 4);
+      if (qNrm && l.qNrm) qNrm.set(l.qNrm, vOff * 4);
+      if (realQUv && l.qUv) realQUv.set(l.qUv, vOff * 2);
+      for (let i = 0; i < l.indexBytes.length; i++) indexBytes[iOff + i] = l.indexBytes[i] + vOff;
+      for (let c = 0; c < 3; c++) {
+        if (l.positionMin[c] < min[c]) min[c] = l.positionMin[c];
+        if (l.positionMax[c] > max[c]) max[c] = l.positionMax[c];
+      }
+      worldError = Math.max(worldError, l.worldError);
+      vOff += l.vertexCount; iOff += l.indexBytes.length;
+    }
+    lods.push(encodeLodViews({
+      level, triangles: indexCount / 3, error: 0, worldError,
+      vertexCount, indexCount, positionMin: min, positionMax: max,
+      uvIsFloat, indicesAre32, qPos, qNrm, qUv: realQUv, indexBytes,
+    }));
+  }
+  const count = tpl.entries.length;
+  const translation = new Float32Array(count * 3);
+  const rotation = new Float32Array(count * 4);
+  const scale = new Float32Array(count * 3);
+  tpl.entries.forEach((e, i) => {
+    translation.set(e.params.t ?? [0, 0, 0], i * 3);
+    rotation.set(e.params.q ?? [0, 0, 0, 1], i * 4);
+    scale.set(e.params.s ?? [1, 1, 1], i * 3);
+  });
+  return {
+    hash: tpl.hash, lods,
+    instances: { count, translation, rotation, scale },
+    dequant: chunkResults[0].dequant,
+  };
+}
+
 // Per-template LOD + quantize + encode. Pure function of the work item —
 // deterministic, and safe to run in any worker thread.
 //
@@ -475,16 +703,24 @@ function processTemplate(item) {
     if (CU) { CU[nv * 2] = item.uvs[v * 2]; CU[nv * 2 + 1] = item.uvs[v * 2 + 1]; }
   }
 
-  // Template-local bounding box (shared by every LOD: one node dequant).
-  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < C.length; i += 3)
-    for (let c = 0; c < 3; c++) {
-      if (C[i + c] < min[c]) min[c] = C[i + c];
-      if (C[i + c] > max[c]) max[c] = C[i + c];
-    }
-  const center = min.map((m, c) => (m + max[c]) / 2);
-  const half = min.map((m, c) => Math.max((max[c] - m) / 2, 1e-9));
+  // Template-local bounding box (shared by every LOD: one node dequant). A
+  // chunked item receives the template-wide frame explicitly — every chunk
+  // of a template must quantize against the same box to stitch cleanly.
+  let center, half;
+  if (item.frame) {
+    center = item.frame.center; half = item.frame.half;
+  } else {
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < C.length; i += 3)
+      for (let c = 0; c < 3; c++) {
+        if (C[i + c] < min[c]) min[c] = C[i + c];
+        if (C[i + c] > max[c]) max[c] = C[i + c];
+      }
+    center = min.map((m, c) => (m + max[c]) / 2);
+    half = min.map((m, c) => Math.max((max[c] - m) / 2, 1e-9));
+  }
   const scaleExtent = MeshoptSimplifier.getScale(C, 3); // stride in floats
+  const simplifyFlags = item.chunked ? ['LockBorder'] : [];
 
   // quantized attribute strides must be 4-byte multiples for meshopt encoding,
   // so VEC3 i16 → 8 bytes (xyz+pad) and VEC3 i8 → 4 bytes (xyz+pad)
@@ -563,7 +799,7 @@ function processTemplate(item) {
     if (prev.triangles <= policy.min_triangles) break;
     const target = Math.max(3, Math.round((base.length * policy.ratios[level]) / 3) * 3);
     const [raw, error] = MeshoptSimplifier.simplify(
-      prevIndices, C, 3, target, policy.errors[level], [],
+      prevIndices, C, 3, target, policy.errors[level], simplifyFlags,
     );
     if (raw.length >= prevIndices.length * 0.95) break; // no real progress ⇒ stop the chain
     // compact this LOD's vertices (drop those the coarse mesh no longer uses)
@@ -576,13 +812,11 @@ function processTemplate(item) {
     prevIndices = raw; // stay in C-space for the next simplification
   }
 
-  // meshopt-encode every bufferView payload (planar vertices, indices, instances)
-  for (const lod of lods) {
-    lod.positionView = MeshoptEncoder.encodeVertexBuffer(bytesOf(lod.qPos), lod.vertexCount, 8);
-    lod.normalView = lod.qNrm ? MeshoptEncoder.encodeVertexBuffer(bytesOf(lod.qNrm), lod.vertexCount, 4) : null;
-    lod.uvView = lod.qUv ? MeshoptEncoder.encodeVertexBuffer(bytesOf(lod.qUv), lod.vertexCount, lod.uvIsFloat ? 8 : 4) : null;
-    lod.indicesView = MeshoptEncoder.encodeIndexBuffer(lod.indexBytes, lod.indexCount, lod.indicesAre32 ? 4 : 2);
-    lod.qPos = null; lod.qNrm = null; lod.qUv = null; lod.indexBytes = null; // keep the wire small
+  // meshopt-encode every bufferView payload (planar vertices, indices);
+  // chunked items return raw buffers — the main thread stitches first
+  for (const lod of lods) if (!item.chunked) encodeLodViews(lod);
+  if (item.chunked) {
+    return { hash: item.hash, chunked: true, lods, dequant: { center, half } };
   }
   const count = item.instances.length;
   const translation = new Float32Array(count * 3);
@@ -605,6 +839,7 @@ const bytesOf = (ta) => new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength);
 (async () => {
   const { MeshoptEncoder, MeshoptSimplifier } = await import('meshoptimizer');
   await Promise.all([MeshoptEncoder.ready, MeshoptSimplifier.ready]);
+  ${encodeLodViews.toString()}
   ${processTemplate.toString()}
   parentPort.on('message', (item) => parentPort.postMessage(processTemplate(item)));
   parentPort.postMessage('__ready');
@@ -683,7 +918,8 @@ function parseFloatList(text, n, label) {
 function usage() {
   console.log(`worldc — the world-stream recipe→glTF compiler
 
-  node worldc.mjs recipe  --source scene.glb [--world NAME] [--branch B] [--version N] [--meta k=v ...] --out recipe.json
+  node worldc.mjs recipe  --source scene.glb [--world NAME] [--branch B] [--version N] [--meta k=v ...]
+                          [--chunk-above N] [--chunk-target M] --out recipe.json
   node worldc.mjs edit    --in recipe.json --id ENTRY (--move dx,dy,dz | --rotate-y DEG | --scale F | --tint r,g,b)
                           [--author NAME] [--note TEXT] --out recipe2.json
   node worldc.mjs build   --recipe recipe.json [--source scene.glb] --out DIR [--jobs N]
@@ -707,7 +943,7 @@ async function main() {
   if (cmd === 'recipe') {
     const sourcePath = resolve(arg('source'));
     const { json: gltf, bin, sha256: sha } = readGlb(sourcePath);
-    const items = harvestSource(gltf, bin).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const items = harvestSource(gltf, bin).items.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const entries = items.map((it) => {
       const { t, q, s } = mat4Decompose(it.world);
       return { id: it.id, src: it.id, params: { t, q, s }, material: null };
@@ -718,13 +954,22 @@ async function main() {
       const [k, ...rest] = argv[i + 1].split('=');
       meta[k] = rest.join('=');
     }
+    const lodPolicyIn = { ...DEFAULT_LODS };
+    const above = arg('chunk-above');
+    const target = arg('chunk-target');
+    if (above !== undefined || target !== undefined) {
+      lodPolicyIn.chunk = {
+        above_triangles: parseInt(above ?? '150000', 10),
+        target_triangles: parseInt(target ?? '200000', 10),
+      };
+    }
     const recipe = {
       schema: SCHEMA_RECIPE,
       world: arg('world', 'world'),
       branch: arg('branch', 'main'),
       version: parseInt(arg('version', '1'), 10),
       source: { kind: 'infinigen2-gltf-export', file: basename(sourcePath), sha256: sha, ...meta },
-      lod_policy: DEFAULT_LODS,
+      lod_policy: lodPolicyIn,
       entries,
       edits: [],
     };
