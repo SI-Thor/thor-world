@@ -21,21 +21,28 @@ Licence: MIT. Part of [builder-ide](https://github.com/SI-Thor/builder-ide); wor
 
 An agent's only way into a builder-ide world. The server is a **pure client
 of the core's HTTP API** — it never imports builder-ide, never touches the
-ledger, and every write goes through one of the core's typed doors with the
-token's actor recorded as its author (`docs/design.md` is the design note).
+ledger, and every write goes through one of the core's typed doors, its
+per-agent token putting both the actor and the agent on the audit row
+(`docs/design.md` is the design note).
 
-**Six resources:** `world://context` (the §1.4 context packet: selection,
-recent history, conversation labels, project state, the budget left tonight,
-the vocabulary and its gaps), `world://vocabulary`, `world://recipe`,
-`world://renders` (and critic verdicts), `world://ledger` (the two tallies),
-`world://dirty` (the `{branch, head, seq}` cursor).
+**Six resources, plus one template:** `world://context` (the §1.4 context
+packet: selection, recent history, conversation labels, project state, the
+budget left tonight, the vocabulary and its gaps), `world://vocabulary`,
+`world://recipe`, `world://recipe/{version}{?against}` (a committed
+version — the document, hash-verified — and, with `?against=<base>`, the
+op list that turns the base into it), `world://renders` (and critic
+verdicts), `world://ledger` (the two tallies), `world://dirty` (the
+`{branch, head, seq}` cursor).
 
-**Eight tools:** `get_context`, `list_vocabulary`, `read_night_plan`,
+**Nine tools:** `get_context`, `list_vocabulary`, `read_night_plan`,
 `propose_recipe_edit` (seals the prediction first), `request_render`,
+`propose_plan_intention` (a proposal on the night's slate, kind
+`plan.intention` — the band is the proposal's own footprint),
 `file_work_order` (terse request + context → question XOR draft + the
-one-line confirm), `confirm_work_order` / `answer_question`, `queue_genbatch`,
-`subscribe_world_dirty`. No tool runs arbitrary code in the world; a core
-refusal (a coming-soon word, params outside a schema) is surfaced verbatim.
+one-line confirm), `confirm_work_order` / `answer_question`,
+`queue_genbatch`, `subscribe_world_dirty`. No tool runs arbitrary code in
+the world; a core refusal (a coming-soon word, params outside a schema)
+is surfaced verbatim.
 
 **Running it** (from this directory; the core is builder-ide's, installed
 read-only into this venv from its own tree):
@@ -53,10 +60,12 @@ BUILDER_CORE_URL=http://thor-lan:8000 \
                                           # the ProArt's agents reach the Thor
 ```
 
-Environment: `BUILDER_CORE_URL`, the three token classes
+Environment: `BUILDER_CORE_URL` and the three token classes
 (`WORLD_MCP_OWNER_TOKEN` / `WORLD_MCP_CHARACTER_TOKEN` /
-`WORLD_MCP_PANEL_TOKEN`, defaulting to a fresh `$BUILDER_HOME`'s dev
-tokens) and `WORLD_MCP_ACTOR` (the agent's own name). A standalone seeded
+`WORLD_MCP_PANEL_TOKEN` — the owner and character tokens are **per-agent
+tokens**, whose `agent` claim lands on every audit row they write, so the
+log itself answers "which agent acted for whom"; the defaults are a fresh
+`$BUILDER_HOME`'s per-agent dev tokens). A standalone seeded
 core for trying it: `.venv/bin/python demo/core_host.py`.
 
 **Tests + demo:**

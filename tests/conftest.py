@@ -105,6 +105,23 @@ class _AsyncClient:
         session = self._holder["session"]
         return self._run(session.call_tool(name, arguments or {}))
 
+    def call_all(self, name, argsets):
+        """Several calls in flight on one session, answers as a list.
+
+        One MCP session multiplexes requests by id, so this is the shape a
+        chatty agent (or several agents behind one server) actually makes —
+        the concurrent-read hammer's muzzle.
+        """
+        import asyncio
+
+        session = self._holder["session"]
+
+        async def together():
+            return list(await asyncio.gather(
+                *(session.call_tool(name, args) for args in argsets)))
+
+        return self._run(together())
+
     def read(self, uri):
         session = self._holder["session"]
         return self._run(session.read_resource(uri))
@@ -114,6 +131,9 @@ class _AsyncClient:
 
     def list_resources(self):
         return self._run(self._holder["session"].list_resources())
+
+    def list_resource_templates(self):
+        return self._run(self._holder["session"].list_resource_templates())
 
     def raw(self):
         """The live ClientSession, for callers driving it directly on the
@@ -189,10 +209,10 @@ def _mcp_http(core_url: str):
     from world_mcp.config import Settings
     from world_mcp.server import build_server
 
-    settings = Settings(core_url=core_url, owner_token="dev-token-casey",
-                        character_token="dev-token-propmaker",
-                        panel_token="dev-token-panel",
-                        agent_name="http-test-agent")
+    settings = Settings(core_url=core_url,
+                        owner_token="dev-token-casey-world-mcp",
+                        character_token="dev-token-props-world-mcp",
+                        panel_token="dev-token-panel")
     app = build_server(settings).streamable_http_app()
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1",

@@ -78,12 +78,15 @@ def test_propose_recipe_edit_seals_first_then_edits(mcp, core_server):
     assert result["committed"] is True
     assert result["version"].startswith("ver_")
     assert result["recorded_as"] == "prop-maker"
+    # the agent claim comes from the core's row, not the server's say-so
+    assert result["agent"] == "world-mcp"
 
     # §5.1 at the log: the seal precedes the call that precedes the commit
     seqs = {e.type: e.seq for e in _events(
         core, ["prediction.sealed", "vocab.call", "version.committed"])}
     assert seqs["prediction.sealed"] < seqs["vocab.call"] < seqs["version.committed"]
     assert _events(core, ["vocab.call"])[-1].actor.id == "prop-maker"
+    assert _events(core, ["vocab.call"])[-1].actor.agent == "world-mcp"
 
 
 def test_a_coming_soon_word_is_refused_at_the_door(mcp):
@@ -116,6 +119,7 @@ def test_request_render_is_priced_from_the_cost_model(mcp):
     assert body["render_spec"] == {"rung": 2, "seed": 42,
                                    "entry_paths": ["harbor.crates"]}
     assert body["recorded_as"] == "prop-maker"
+    assert body["agent"] == "world-mcp"  # read from the task's audit row
 
 
 def test_request_render_rejects_a_rung_off_the_ladder(mcp):
@@ -145,6 +149,7 @@ def test_file_work_order_compiles_the_terse_request(mcp, core_server):
     assert line.endswith("Go?")
     assert result["confirm_line"] == line
     assert result["recorded_as"] == "casey"
+    assert result["agent"] == "world-mcp"  # the row answers, not the server
     # the packet the core captured is in the log, with the author
     filed = _events(core, ["wo.filed"])[-1]
     snapshot = filed.payload.get("packet_snapshot") or {}
@@ -177,6 +182,7 @@ def test_the_question_loop_closes(mcp):
     # there is no `open` flag on the record — the projection keeps that)
     assert answered["question"]["answer"] == choice
     assert answered["recorded_as"] == "casey"
+    assert answered["agent"] == "world-mcp"
     # refiling with the resolved selection compiles the draft
     again = tool_body(mcp.call("file_work_order", {
         "request": "weather these",
@@ -194,7 +200,10 @@ def test_confirm_work_order_go_queues_it(mcp, core_server):
     confirmed = tool_body(mcp.call("confirm_work_order",
                                    {"work_order": draft["id"], "answer": "go"}))
     assert confirmed["work_order"]["state"] == "queued"
-    assert _events(core, ["wo.confirmed"])[-1].actor.id == "casey"
+    assert confirmed["recorded_as"] == "casey"
+    assert confirmed["agent"] == "world-mcp"
+    row = _events(core, ["wo.confirmed"])[-1].actor
+    assert (row.id, row.agent) == ("casey", "world-mcp")
 
 
 def test_confirm_work_order_no_cancels(mcp):
@@ -220,6 +229,42 @@ def test_confirm_is_idempotent_by_key(mcp):
 # ------------------------------------------------------------- the night
 
 
+def test_propose_plan_intention_files_on_the_slate(mcp):
+    """The core's plan.intention kind (design note §8.4, answered): an
+    agent proposes to the night's slate, priced like everything else."""
+    body = tool_body(mcp.call("propose_plan_intention", {
+        "intention": "rope coils for the south span — three variants, "
+                     "the owner picks one"}))
+    task = body["task"]
+    assert task["kind"] == "plan.intention"
+    assert task["state"] == "slated"
+    # the proposal's own footprint: filing runs nothing on the box — the
+    # ask is the owner's decision on it, the model's attention estimate,
+    # marked [e] until a morning measures it
+    assert body["price"]["ask"]["gpu_minutes"] == 0.0
+    assert body["price"]["ask"]["wall_minutes"] > 0.0
+    assert body["price"]["basis"] == "estimate"
+    assert body["price"]["marked"] == "[e]"
+    assert body["recorded_as"] == "prop-maker"
+    assert body["agent"] == "world-mcp"
+    # the slate the owner reads before starting the night carries the
+    # proposal, marked and all
+    plan = tool_body(mcp.call("read_night_plan"))
+    row = next(r for r in plan["slate"]["rows"]
+               if r["kind"] == "plan.intention")
+    assert row["marked"] == "[e]"
+    assert "rope coils" in row["intention"]
+
+
+def test_propose_plan_intention_keeps_an_override_an_override(mcp):
+    body = tool_body(mcp.call("propose_plan_intention", {
+        "intention": "a proposal priced by its filer",
+        "cost_estimate": {"gpu_minutes": 0, "wall_minutes": 5,
+                          "hosted_cents": 0}}))
+    assert body["task"]["ask_source"] == "override"
+    assert body["task"]["cost_estimate"]["wall_minutes"] == 5
+
+
 def test_queue_genbatch_prices_the_batch(mcp, core_server):
     _url, core = core_server
     body = tool_body(mcp.call("queue_genbatch", {
@@ -230,6 +275,7 @@ def test_queue_genbatch_prices_the_batch(mcp, core_server):
     single = 0.26791666666666664
     assert body["price"]["ask"]["gpu_minutes"] == pytest.approx(single * 6, rel=1e-3)
     assert body["recorded_as"] == "prop-maker"
+    assert body["agent"] == "world-mcp"
     assert _events(core, ["night.task.created"])[-1].payload["task"]["kind"] \
         == "prop.512"
 
@@ -248,25 +294,39 @@ def test_subscribe_world_dirty_reads_the_backlog(mcp):
 
 
 def test_the_dirty_backlog_resumes_from_a_cursor(mcp, core_server):
-    url, _core = core_server
+    url, core = core_server
     first = tool_body(mcp.call("subscribe_world_dirty", {}))
     seq = first["cursor"]["seq"]
-    # someone else changes the world through the core's own door
+    # someone else changes the world through the core's own door — a plain
+    # token without an agent claim, exactly as §4.1 always behaved
     httpx.post(url + "/v1/vocab/call", headers=PROP, json={
         "word": "props.harbor.crates", "node": "crates_01",
         "params": {"count": 9, "style": "stained", "from_library": 0, "seed": 5}})
+    assert _events(core, ["vocab.call"])[-1].actor.agent is None
     second = tool_body(mcp.call("subscribe_world_dirty", {"since_seq": seq}))
     assert second["cursor"]["seq"] > seq
     assert any(e["type"] == "version.committed" for e in second["events"])
 
 
-def test_the_author_is_on_every_write(core_server):
-    """The brief's rule, checked at the log: every write names its author."""
+def test_the_author_is_on_every_write(mcp, core_server):
+    """The brief's rule, checked at the log: every write names its author —
+    and the row alone answers *which agent acted for whom*."""
     url, core = core_server
+    # the agent files through its per-agent token …
+    tool_body(mcp.call("file_work_order", {
+        "request": "make these sturdier", "selection": ["span_south"],
+        "intent": STURDIER_INTENT}))
+    # … and Casey's own hand files through the plain token (no agent claim)
     httpx.post(url + "/v1/call", headers=OWNER, json={
         "utterance": "make these sturdier",
         "view": {"branch": "br_main", "selection": ["span_south"]},
         "intent": {"spec_sentence": "reinforce the south span",
                    "estimate": STURDIER_INTENT["estimate"]}})
-    for ev in _events(core, ["wo.filed", "wo.compiled"]):
+    rows = _events(core, ["wo.filed", "wo.compiled"])
+    for ev in rows:
         assert ev.actor.id, f"{ev.type} has no author"
+    # one actor (casey), two authors on the filed rows: the server's carry
+    # the agent claim, Casey's own carry none — recorded, never gated (A1)
+    filed = [ev for ev in rows if ev.type == "wo.filed"]
+    assert {ev.actor.id for ev in filed} == {"casey"}
+    assert {ev.actor.agent for ev in filed} == {"world-mcp", None}
