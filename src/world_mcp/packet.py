@@ -15,8 +15,6 @@ resource shows the world as it was last seen, not an empty room.
 
 from __future__ import annotations
 
-import anyio
-
 from .client import CoreClient
 
 #: The bounds the spec pins for the packet's history halves (§1.4.1); the
@@ -102,19 +100,18 @@ def _main_branch(branches: dict) -> dict | None:
 
 
 async def _gather(core: CoreClient):
-    """Read the six doors at once; any failure fails the whole read loudly
-    rather than half-composing a packet."""
-    results: dict[str, object] = {}
+    """Read the six doors, one at a time; any failure fails the whole read
+    loudly rather than half-composing a packet.
 
-    async def run(name: str, aw) -> None:
-        results[name] = await aw
-
-    async with anyio.create_task_group() as tg:
-        tg.start_soon(run, "slate", core.get("/v1/slate"))
-        tg.start_soon(run, "budget", core.get("/v1/budget"))
-        tg.start_soon(run, "vocab", core.get("/v1/vocab"))
-        tg.start_soon(run, "branches", core.get("/v1/branches"))
-        tg.start_soon(run, "wos", core.get("/v1/work-orders"))
-        tg.start_soon(run, "events", core.read_events(HISTORY_TYPES))
-    return (results["slate"], results["budget"], results["vocab"],
-            results["branches"], results["wos"], results["events"])
+    Sequential on purpose: the core serves its doors from a threadpool over
+    one SQLite connection, and two store-reading requests in the same tick
+    can collide in the store (a rare 500 we saw in testing). The reads are
+    cheap — the SSE backlog dominates the packet's wall clock either way.
+    """
+    slate = await core.get("/v1/slate")
+    budget = await core.get("/v1/budget")
+    vocab = await core.get("/v1/vocab")
+    branches = await core.get("/v1/branches")
+    wos = await core.get("/v1/work-orders")
+    events = await core.read_events(HISTORY_TYPES)
+    return slate, budget, vocab, branches, wos, events

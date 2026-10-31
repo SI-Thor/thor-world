@@ -245,25 +245,11 @@ def _register_resources(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> 
         mime_type="application/json",
     )
     async def resource_ledger() -> dict:
-        import anyio as _anyio
-
-        async def tally():
-            return await core.get("/v1/predictions/tally")
-
-        async def taste():
-            # the owner's door: the taste ledger is the owner's voice (§1.7),
-            # and a panel/character read is author-scoped to itself — empty
-            return await core.get("/v1/ledger/taste", principal="owner")
-
-        async def budget():
-            return await core.get("/v1/budget")
-
-        out: dict[str, Any] = {}
-        async with _anyio.create_task_group() as tg:
-            for name, fn in (("predictions", tally), ("taste", taste),
-                             ("budget", budget)):
-                tg.start_soon(_run_into, out, name, fn)
-        return out
+        return {
+            "predictions": await core.get("/v1/predictions/tally"),
+            "taste": await core.get("/v1/ledger/taste", principal="owner"),
+            "budget": await core.get("/v1/budget"),
+        }
 
     @mcp.resource(
         "world://dirty",
@@ -281,10 +267,6 @@ def _register_resources(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> 
             "cursor": cursor_from_events(events, seq=dirty.last_seq),
             "recent": events[-12:],
         }
-
-
-async def _run_into(out: dict, key: str, fn) -> None:
-    out[key] = await fn()
 
 
 # ------------------------------------------------------------------ tools
@@ -357,10 +339,10 @@ def _register_tools(mcp: MCPServer, core: CoreClient, settings: Settings,
                     "budget left if a night is running.",
     )
     async def tool_read_night_plan() -> dict:
-        out: dict[str, Any] = {}
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(_run_into, out, "slate", lambda: core.get("/v1/slate"))
-            tg.start_soon(_run_into, out, "budget", lambda: core.get("/v1/budget"))
+        out: dict[str, Any] = {
+            "slate": await core.get("/v1/slate"),
+            "budget": await core.get("/v1/budget"),
+        }
         out.update(author_note("the slate is read-only here; starting or "
                                "stopping the night is the owner's door"))
         return out
