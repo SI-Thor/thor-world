@@ -1,0 +1,16 @@
+{
+  "name": "world-stream-compiler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "world-stream: deterministic recipe→glTF compiler (LOD chains, instancing, meshopt)",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "meshoptimizer": "^1.3.0"
+  },
+  "scripts": {
+    "fixture": "node test/make_fixture.mjs",
+    "verify": "node worldc.mjs verify --recipe ../recipes/fixture.v1.json"
+  }
+}
