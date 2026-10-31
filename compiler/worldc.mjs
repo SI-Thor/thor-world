@@ -321,8 +321,10 @@ function splitSpatial(indices, positions, targetTriangles) {
 }
 
 // The quantization frame for a chunked template: one bbox over every vertex
-// its triangles reference — the same set the un-chunked path compacts to.
-function templateFrame(positions, indices) {
+// its triangles reference — the same set the un-chunked path compacts to —
+// plus the template-wide UV-range decision (every chunk must quantize UVs
+// the same way or the stitched buffers do not compose).
+function templateFrame(positions, indices, uvs) {
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < indices.length; i++) {
     const v = indices[i] * 3;
@@ -331,9 +333,16 @@ function templateFrame(positions, indices) {
       if (positions[v + c] > max[c]) max[c] = positions[v + c];
     }
   }
+  let uvIsFloat = false;
+  if (uvs) {
+    for (let i = 0; i < uvs.length; i++) {
+      if (uvs[i] < -1e-6 || uvs[i] > 1 + 1e-6) { uvIsFloat = true; break; }
+    }
+  }
   return {
     center: min.map((m, c) => (m + max[c]) / 2),
     half: min.map((m, c) => Math.max((max[c] - m) / 2, 1e-9)),
+    uvIsFloat,
   };
 }
 
@@ -381,7 +390,7 @@ async function compile(recipe, sourcePath, { jobs = 1, phaseTimings = null } = {
     const src = tpl.source;
     if (chunkPolicy && src.indices.length / 3 > chunkPolicy.above_triangles) {
       const chunks = splitSpatial(src.indices, src.positions, chunkPolicy.target_triangles);
-      const frame = templateFrame(src.positions, src.indices);
+      const frame = templateFrame(src.positions, src.indices, src.uvs);
       chunks.forEach((indices) => {
         work.push({
           hash: tpl.hash, chunked: true, frame,
@@ -620,18 +629,24 @@ function encodeLodViews(lod) {
 
 // Fold a chunked template's per-chunk LODs back into one template result:
 // level-by-level concatenation with per-chunk index offsets (the shared
-// quantization frame makes the buffers composable), the chain depth being
-// the shallowest chunk's (chains stop per chunk), worldError the max.
+// quantization frame makes the buffers composable). A chunk whose own chain
+// stalled repeats its coarsest LOD while others still progress; the template
+// chain stops when a stitched level no longer shrinks (honest, at the level
+// that matters — the one the viewer sees).
 function stitchChunks(tpl, chunkResults) {
-  const depth = Math.min(...chunkResults.map((r) => r.lods.length));
+  const depth = Math.max(...chunkResults.map((r) => r.lods.length));
   const lods = [];
   for (let level = 0; level < depth; level++) {
     let vertexCount = 0; let indexCount = 0;
-    for (const r of chunkResults) { vertexCount += r.lods[level].vertexCount; indexCount += r.lods[level].indexCount; }
-    const first = chunkResults[0].lods[level];
-    const hasNrm = chunkResults.every((r) => r.lods[level].qNrm !== null);
-    const hasUv = chunkResults.every((r) => r.lods[level].qUv !== null);
-    if (hasUv && chunkResults.some((r) => r.lods[level].uvIsFloat !== first.uvIsFloat)) {
+    for (const r of chunkResults) {
+      const l = r.lods[Math.min(level, r.lods.length - 1)];
+      vertexCount += l.vertexCount; indexCount += l.indexCount;
+    }
+    if (level > 0 && indexCount / 3 >= lods[level - 1].triangles * 0.98) break;
+    const first = chunkResults[0].lods[Math.min(level, chunkResults[0].lods.length - 1)];
+    const hasNrm = chunkResults.every((r) => r.lods[Math.min(level, r.lods.length - 1)].qNrm !== null);
+    const hasUv = chunkResults.every((r) => r.lods[Math.min(level, r.lods.length - 1)].qUv !== null);
+    if (hasUv && chunkResults.some((r) => r.lods[Math.min(level, r.lods.length - 1)].uvIsFloat !== first.uvIsFloat)) {
       throw new Error('chunked template: mixed uv quantization across chunks');
     }
     const indicesAre32 = vertexCount - 1 > 65535;
@@ -644,7 +659,7 @@ function stitchChunks(tpl, chunkResults) {
     const min = [32767, 32767, 32767], max = [-32767, -32767, -32767];
     let worldError = 0; let vOff = 0; let iOff = 0;
     for (const r of chunkResults) {
-      const l = r.lods[level];
+      const l = r.lods[Math.min(level, r.lods.length - 1)];
       qPos.set(l.qPos, vOff * 4);
       if (qNrm && l.qNrm) qNrm.set(l.qNrm, vOff * 4);
       if (realQUv && l.qUv) realQUv.set(l.qUv, vOff * 2);
@@ -749,9 +764,12 @@ function processTemplate(item) {
     }
     let qUv = null; let uvIsFloat = false;
     if (CU) {
-      let inRange = true;
-      for (let i = 0; i < CU.length; i++) if (CU[i] < -1e-6 || CU[i] > 1 + 1e-6) { inRange = false; break; }
-      uvIsFloat = !inRange;
+      if (item.frame) uvIsFloat = item.frame.uvIsFloat; // template-wide decision
+      else {
+        let inRange = true;
+        for (let i = 0; i < CU.length; i++) if (CU[i] < -1e-6 || CU[i] > 1 + 1e-6) { inRange = false; break; }
+        uvIsFloat = !inRange;
+      }
       qUv = uvIsFloat ? new Float32Array(unique * 2) : new Uint16Array(unique * 2);
       for (let v = 0; v < srcVertexCount; v++) {
         const nv = remap[v];
