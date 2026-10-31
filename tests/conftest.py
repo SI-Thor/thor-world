@@ -115,6 +115,9 @@ class _AsyncClient:
     def list_resources(self):
         return self._run(self._holder["session"].list_resources())
 
+    def list_resource_templates(self):
+        return self._run(self._holder["session"].list_resource_templates())
+
     def raw(self):
         """The live ClientSession, for callers driving it directly on the
         loop (the subscription test)."""

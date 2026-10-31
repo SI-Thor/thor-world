@@ -31,7 +31,7 @@ from typing import Any
 
 import anyio
 
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError, ToolError
 from mcp.server.mcpserver.server import MCPServer
 from mcp.server.subscriptions import InMemorySubscriptionBus
 from mcp.shared.subscriptions import ResourceUpdated
@@ -201,7 +201,9 @@ def _register_resources(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> 
         name="the recipe and its history",
         description="Branch heads and the committed version history (hashes, "
                     "messages, authors). The recipe is the source of truth; "
-                    "meshes and renders are caches.",
+                    "meshes and renders are caches. The versions themselves "
+                    "read at world://recipe/{version} — the document, the "
+                    "hash-verified record, and the diff against any base.",
         mime_type="application/json",
     )
     async def resource_recipe() -> dict:
@@ -219,11 +221,37 @@ def _register_resources(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> 
             "branches": branches.get("branches", []),
             "standing": branches.get("standing", []),
             "history": versions,
-            "note": "the recipe document itself is content-addressed in the "
-                    "core's blob store; no HTTP door serves it yet (the "
-                    "seam /v1/world/scene answers 501). The history and the "
-                    "hashes are the diffable truth a night's work leaves.",
+            "note": "a version's document reads at "
+                    "world://recipe/{version} (GET /v1/recipe/{version}); "
+                    "add ?against=<base> for the op list between two "
+                    "versions. The history and the hashes are the "
+                    "diffable truth a night's work leaves.",
         }
+
+    @mcp.resource(
+        "world://recipe/{version}{?against}",
+        name="a recipe version (and its diff)",
+        description="One committed version of the world: the document read "
+                    "from its content-addressed blob and verified against "
+                    "root_hash, with the record (parent, edit, author). "
+                    "With ?against=<base>: the canonical op list that turns "
+                    "the base into this version — base→version, so a "
+                    "night's edits read forward. Versions are immutable, so "
+                    "this resource never goes dirty.",
+        mime_type="application/json",
+    )
+    async def resource_recipe_version(version: str,
+                                      against: str | None = None) -> dict:
+        try:
+            return await core.get(f"/v1/recipe/{version}",
+                                  params=({"against": against}
+                                          if against else None))
+        except CoreError as exc:
+            # the refusal, verbatim — the same edge the tools surface (a
+            # missing version is the door's NotFound, not a server crash)
+            if exc.status == 404:
+                raise ResourceNotFoundError(_refusal(exc)) from exc
+            raise ResourceError(_refusal(exc)) from exc
 
     @mcp.resource(
         "world://renders",

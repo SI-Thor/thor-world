@@ -14,11 +14,14 @@ of the core's HTTP API** — it never imports builder-ide, never touches the
 ledger, and every write goes through one of the core's typed doors with the
 token's actor recorded as its author (`docs/design.md` is the design note).
 
-**Six resources:** `world://context` (the §1.4 context packet: selection,
-recent history, conversation labels, project state, the budget left tonight,
-the vocabulary and its gaps), `world://vocabulary`, `world://recipe`,
-`world://renders` (and critic verdicts), `world://ledger` (the two tallies),
-`world://dirty` (the `{branch, head, seq}` cursor).
+**Six resources, plus one template:** `world://context` (the §1.4 context
+packet: selection, recent history, conversation labels, project state, the
+budget left tonight, the vocabulary and its gaps), `world://vocabulary`,
+`world://recipe`, `world://recipe/{version}{?against}` (a committed
+version — the document, hash-verified — and, with `?against=<base>`, the
+op list that turns the base into it), `world://renders` (and critic
+verdicts), `world://ledger` (the two tallies), `world://dirty` (the
+`{branch, head, seq}` cursor).
 
 **Eight tools:** `get_context`, `list_vocabulary`, `read_night_plan`,
 `propose_recipe_edit` (seals the prediction first), `request_render`,

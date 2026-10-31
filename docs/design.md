@@ -50,7 +50,8 @@ endpoint with exactly one token class; each resource composes reads.
 |---|---|---|---|
 | resource `world://context` | `/v1/slate` + `/v1/budget` + `/v1/vocab` + `/v1/branches` + `/v1/work-orders` + `/v1/events` | panel | the §1.4 packet, composed; see §3 below |
 | resource `world://vocabulary` | `/v1/vocab` | panel | words incl. coming-soon edges, taste notes read-only |
-| resource `world://recipe` | `/v1/branches` + `version.committed` events | panel | hashes + history; the document itself is content-addressed (no door serves it yet) |
+| resource `world://recipe` | `/v1/branches` + `version.committed` events | panel | hashes + history; the versions themselves read at the template below |
+| resource `world://recipe/{version}{?against}` | `GET /v1/recipe/{version}` (+ `?against=` diff) | panel | the document, hash-verified at the core; `?against=<base>` gives the op list base→version (§1.1) |
 | resource `world://renders` | `render.completed` + `critic.verdict` events | panel | newest last; a verdict is a word |
 | resource `world://ledger` | `/v1/predictions/tally` + `/v1/ledger/taste` (owner read) + `/v1/budget` | panel + owner | the two tallies kept apart (§1.7) |
 | resource `world://dirty` | `/v1/events` backlog | panel | the cursor, §5 below |
