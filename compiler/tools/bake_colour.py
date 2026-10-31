@@ -235,11 +235,27 @@ def prep_uvs(objects, mode: str, report: dict, cache_dir: Path | None) -> None:
     if mode == "xatlas":
         if cache_dir:
             cache_dir.mkdir(parents=True, exist_ok=True)
-        per_mesh = [xatlas_uv(o.data, o.name, cache_dir) for o in objects]
+        per_mesh = []
+        kept = []
+        XATLAS_MAX_TRIS = 300_000  # charting is superlinear; above this we keep
+        for o in objects:          # the generator's own UVMap (uvcheck showed
+            mesh = o.data          # the big room shell is not an offender)
+            mesh.calc_loop_triangles()
+            ntri = len(mesh.loop_triangles)
+            if ntri > XATLAS_MAX_TRIS:
+                if mesh.uv_layers:
+                    mesh.uv_layers.active_index = 0
+                    kept.append({"object": o.name, "triangles": ntri})
+                else:
+                    cube_bucket_uv(mesh)
+                    kept.append({"object": o.name, "triangles": ntri, "uv": "cube"})
+                continue
+            per_mesh.append(xatlas_uv(o.data, o.name, cache_dir))
         slowest = max(per_mesh, key=lambda r: r.get("seconds", 0))
         report["uv"] = {
             "mode": mode, "count": len(per_mesh),
             "hits": sum(1 for r in per_mesh if r.get("cache") == "hit"),
+            "kept_own_uv": kept,
             "seconds": round(time.perf_counter() - t0, 3),
             "slowest": {k: slowest[k] for k in ("object", "triangles", "seconds") if k in slowest},
         }
