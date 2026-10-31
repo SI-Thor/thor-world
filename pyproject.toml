@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "world-mcp"
+version = "0.1.0"
+description = "the MCP server over the builder-ide world: any agent works on a world only through the core's own doors"
+requires-python = ">=3.12"
+# The server is a *client* of the core's HTTP API (core.api) — it never
+# imports builder-ide. mcp is the official Model Context Protocol SDK
+# (MIT) and httpx the HTTP client; that is the whole runtime surface.
+dependencies = [
+    "mcp>=2.3",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# The harness (tests + demo) needs uvicorn to serve the core; builder-ide
+# itself is installed read-only from its own tree (see README):
+#   pip install -e /path/to/builder-ide
+# world_mcp never imports it — only demo/core_host.py does.
+dev = [
+    "pytest>=8",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+world-mcp = "world_mcp.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# `demo` is on the path so the tests can boot the same wired core host the
+# demo runs against — one harness, two callers.
+pythonpath = ["src", "demo"]
