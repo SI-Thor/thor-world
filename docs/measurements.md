@@ -213,10 +213,68 @@ the busy pre-reboot box** (load 58–66):
 
 ## 8. What is still designed, not measured
 
-- KTX2/Basis texture stage — nothing to transcode until the colour
-  pipeline exists (§1.1); `toktx` needs a source build (Casey's OK).
 - GPU (Warp) simplification, zero-copy export — design + falsifier in
   design.md §2.2/§2.4; §4 now supplies the CPU floor (6.74 s, shell-
   dominated) and §1 the export-cost seam the zero-copy path removes.
 - Fragment-GLB deltas (geometry-adding `instance.add`) — schema
   reserved, not exercised.
+
+---
+
+# Round 2 — 2026-10-31 afternoon (colour, and the serial tail)
+
+Box state for everything below: the Thor rebooted again ~13:29 (the
+morning's event was still the same boot — uptime 47 min observed at
+14:17); the sweep self-restarted as before and load sat at ~5–11.
+`~/lm-wt/heavy.lock` is now honoured by other seats too — an fp8/TRELLIS
+experiment and a CUDA extension build each held it while the colour runs
+queued; every queue wait is part of the honest wall-clock below.
+
+## 9. The serial tail, split (chunked LOD simplification)
+
+The round-1 finding was that `--jobs 14` (8.06 s) lost to `--jobs 1`
+(6.74 s) because one 1,769,472-triangle room-shell template serialized
+the compile. Round 2 adds the lever: `worldc recipe --chunk-above N
+--chunk-target M` splits a template above the threshold into contiguous
+spatial chunks (recursive median split of triangle centroids along the
+longest bbox axis — a pure function of the geometry), simplifies each
+chunk on its own worker with meshoptimizer's `LockBorder` (the cut edges
+are open edges; locked border vertices mean neighbouring chunks' LODs
+still mate — no cracks), and stitches the per-chunk LODs back into one
+template. A chunk whose own chain stalls repeats its coarsest LOD while
+siblings progress; the template chain stops when a stitched level shrinks
+less than 2 %.
+
+Living room, same box and load class as §4 (Thor, load ~6–7, sweep
+running):
+
+| recipe | jobs 1 | jobs 14 | `world@1.glb` | triangles, all LODs | shell chain |
+|---|---|---|---|---|---|
+| unchunked (§4) | **6.74 s** | 8.06 s | 43,843,672 B | 3,514,274 | 1,769,472 → 884,736 → 590,674, stop |
+| chunk-target 200k | 12.63 s | 6.06 s | 80,915,564 B | 4,396,124 | 1,769,472 → 1,041,422 → 709,646 → 606,192 |
+| chunk-target 400k | 10.60 s | **4.98 s** | 80,559,660 B | 4,213,650 | 1,769,472 → 898,276 → 677,092 → 599,418 |
+
+- **Parallelism now pays**: jobs 14 went from 20 % *slower* than jobs 1
+  to **2.1× faster**, and the best wall dropped 8.06 → 4.98 s (1.62×)
+  against the same source and policy space.
+- **The price is bytes**: locked borders retain triangles, so the file
+  grows 43.8 → 80.6 MB (+84 %) and all-LOD triangles 3.51 M → 4.21 M.
+  Fewer, bigger chunks (400k) reduce both the border overhead and the
+  wall — chunk400 dominates chunk200 on every axis here.
+- **Determinism holds**: `--jobs 1` ≡ `--jobs 14` byte-for-byte on the
+  Thor for both chunk sizes, and the chunk-400k build is byte-identical
+  across machines — Thor aarch64 (jobs 14) ≡ ProArt x86 (jobs 6), sha256
+  `f0b4e5d6…`. The fixture's un-chunked sha is unchanged (`0da3ae36…`) —
+  the feature is opt-in per recipe and touches nothing else.
+- Phase timings (chunk400, jobs 14): parse 330 ms, LOD+quantize+encode
+  4,304 ms, assemble+serialize 41 ms — the tail is now eight ~220k-tri
+  chunk simplifies fanned across workers instead of one 1.77 M-tri
+  monolith.
+- The chunked world renders in the viewer unchanged (manifest shape is
+  untouched): 55 templates · 110 instances, live LOD mix 24/9/8/14 at the
+  screenshot instant — the shell's four-level chain is actually used.
+- What chunking does *not* fix: per-chunk `LockBorder` costs reduction
+  efficiency (LOD1 keeps 898k vs the monolith's 884k — close), and the
+  single-threaded compile got slower (6.74 → 10.60 s) — the lever buys
+  parallel wall, not total work. The Warp/clustered simplifier (§2.2)
+  remains the answer for total-work reduction.
