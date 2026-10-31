@@ -69,8 +69,13 @@ function scanVersions() {
 }
 
 let world = scanVersions();
-const bootHead = world.head;
-let announced = world.head; // versions above this are held back in demo mode
+// Boot at the newest version that has a full world (a manifest). Versions
+// above it that exist only as deltas are what demo mode lets "land" live; a
+// head that is only a delta has no manifest to load first.
+const fullHead = (w, upTo = Infinity) =>
+  Math.max(0, ...[...w.manifests.keys()].filter((v) => v <= upTo));
+const bootHead = fullHead(world) || world.head;
+let announced = bootHead; // versions above this are held back in demo mode
 let demoTimer = null;
 
 setInterval(() => {
@@ -140,9 +145,12 @@ const server = createServer(async (req, res) => {
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    // A page that loads now gets the newest full world it may see; any
+    // announced deltas above it arrive through /api/events → since_version.
+    const base = fullHead(world, announced);
     res.end(JSON.stringify({
-      branch: world.branch, head: world.head,
-      manifest_file: world.manifests.get(world.head) ?? null,
+      branch: world.branch, head: base,
+      manifest_file: world.manifests.get(base) ?? null,
     }));
     return;
   }
