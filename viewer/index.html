@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>world-stream viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d12; color: #d7dce5;
+    font: 13px/1.45 "Segoe UI", system-ui, sans-serif; }
+  #gl { position: fixed; inset: 0; display: block; }
+  #hud { position: fixed; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 8px;
+    pointer-events: none; max-width: 460px; }
+  .card { background: rgba(13, 16, 24, 0.82); border: 1px solid #232a38; border-radius: 10px;
+    padding: 10px 12px; backdrop-filter: blur(6px); }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .chip { border: 1px solid #2c3547; border-radius: 999px; padding: 2px 9px; font-size: 12px;
+    color: #9fb0c8; white-space: nowrap; }
+  .chip b { color: #e8eef8; font-weight: 600; }
+  .chip.backend-webgpu { border-color: #37b24d; color: #a9e8b5; }
+  .chip.backend-webgl2 { border-color: #f08c00; color: #ffd8a8; }
+  .chip.dirty { border-color: #4dabf7; color: #a5d8ff; }
+  #log { position: fixed; bottom: 12px; left: 12px; width: 420px; display: flex; flex-direction: column;
+    gap: 6px; pointer-events: none; }
+  .entry { background: rgba(13, 16, 24, 0.82); border: 1px solid #232a38; border-left: 3px solid #4dabf7;
+    border-radius: 8px; padding: 8px 10px; animation: slide-in 0.25s ease-out; }
+  .entry .who { color: #74c0fc; font-weight: 600; }
+  .entry .what { color: #ced8e6; }
+  .entry .meta { color: #7c8899; font-size: 11px; margin-top: 2px; }
+  @keyframes slide-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+  #fps { color: #7c8899; }
+  #err { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff8787;
+    background: rgba(30,10,10,0.9); padding: 14px 18px; border-radius: 10px; max-width: 60ch; display: none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud">
+  <div class="card">
+    <div class="row">
+      <span class="chip" id="world">world —</span>
+      <span class="chip" id="backend">backend: …</span>
+      <span class="chip" id="version">v—</span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <span class="chip" id="stats">…</span>
+      <span class="chip" id="lods">…</span>
+      <span class="chip" id="fps">— fps</span>
+    </div>
+    <div style="margin-top:6px;color:#8a94a6;font-size:11px">
+      world-stream viewer · SSE <code>world.dirty</code> → <code>/api/scene?since_version=</code> delta · LOD by screen-space error
+    </div>
+  </div>
+</div>
+<div id="log"></div>
+<div id="err"></div>
+<script type="module" src="./viewer.js"></script>
+</body>
+</html>
