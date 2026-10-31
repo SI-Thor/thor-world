@@ -205,3 +205,11 @@ order to the ledger naming its author.
    character). If cloud authors should file *plan* intentions and not
    only genbatches, `/v1/tasks` needs a kind for it — a one-line core
    change, mirrored here as one tool.
+5. **Concurrent reads on the store.** Under load we drew a rare 500 from
+   the core's doors — `sqlite3.InterfaceError` in `core.store`'s
+   `count_events` — when two store-reading GETs landed in the threadpool
+   in the same tick (the store serves endpoints from FastAPI's threads
+   over one SQLite connection). This server now takes the doors strictly
+   one at a time, so it never races the store; the ProArt client and any
+   other concurrent caller still could. A lock (or a per-thread
+   connection) around the store's reads would close it for everyone.
