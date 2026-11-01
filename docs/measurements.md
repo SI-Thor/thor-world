@@ -356,9 +356,21 @@ KTX2 stage).
 
 | bake (GPU, 512², 3 maps/object) | |
 |---|---|
-| per object | ~16.0 s mean (three bakes + three PNG encodes + bake-session overhead) |
-| texture bytes, first 70 objects | 13,180,960 B PNG (base+rough+normal) |
-| same 70 objects as WebP q85 | 2,384,414 B — **0.181× (5.5× smaller)**, and Pillow's WebP encode is byte-deterministic for fixed settings |
+| bake loop, 104 objects | 1,707 s total (**16.4 s/object mean**, max 19.2 s — three bakes + three PNG encodes + per-bake session overhead) |
+| texture bytes (base / rough / normal) | 15,973,542 / 4,770,720 / 33,901,052 B — normals dominate; only base colour rides the wire |
+| same base set as WebP q85 | **0.181× PNG (5.5× smaller)**, and Pillow's WebP encode is byte-deterministic for fixed settings |
+| glTF export (textured materials) | 3.5 s — still stall-free |
+| `source_textured.glb` | 109,926,480 B, sha256 `07aca919…` |
+| Cycles beauty render (64 spp, 768²) | 12.1 s — but **black**: the bare `.blend` carries no interior lighting rig (that lives in the Infinigen render task), so the enclosed room renders unlit; the viewer screenshots are the look-proof |
+
+**In the viewer**: the textured source compiles to `world@1.glb`
+**63,837,444 B** (grey 43.8 MB → +45 %: ~16 MB of base PNGs plus
+UV-seam vertex splitting — LOD0 grows 1,979,464 → 2,215,960 tris) with
+**103 templates / 132 instances** — per-object textures break the
+geometry dedup (55 templates grey, 74 flat), exactly the cost the
+per-material-atlas KTX2 stage would claw back. Live LOD mix at the
+screenshot instant: 43/22/12/26 — the textures follow every LOD swap
+(`livingroom-textured-v1/v2.png`).
 
 **Bake determinism — better than the renders**: the two independent GPU
 bake runs produced **byte-identical PNGs for every comparable object**
