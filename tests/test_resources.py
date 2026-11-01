@@ -11,7 +11,7 @@ from __future__ import annotations
 from conftest import resource_body
 
 
-def test_the_six_resources_are_listed(mcp):
+def test_the_seven_resources_are_listed(mcp):
     uris = sorted(str(r.uri) for r in mcp.list_resources().resources)
     assert uris == [
         "world://context",
@@ -20,6 +20,7 @@ def test_the_six_resources_are_listed(mcp):
         "world://recipe",
         "world://renders",
         "world://vocabulary",
+        "world://why",
     ]
 
 

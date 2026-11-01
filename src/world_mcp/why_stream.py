@@ -190,28 +190,42 @@ def mock_digest_stream(
 
     A tiny world: population wobbles, occasional stalls harvest a purpose
     to unknown, occasional revives, one auction every 10 ticks.
-    """
-    import random
 
-    rng = random.Random(seed)
+    The draws come from the same LCG the chain hash uses (Knuth's
+    constants), seeded — deterministic without growing the module's
+    import surface, which the purity test pins to stdlib-plus-httpx.
+    """
+    def draw(state: list[int]) -> float:
+        """One LCG step, as a unit float: the top bits are the ones that
+        move."""
+        state[0] = (state[0] * 6364136223846793005 + 1442695040888963407) % (2**64)
+        return state[0] / 2**64
+
+    def below(state: list[int], chance: float) -> bool:
+        return draw(state) < chance
+
+    def between(state: list[int], high: int) -> int:
+        return int(draw(state) * high)
+
+    rng = [seed or 1]
     alive, unknown, dead = start_alive, 0, 0
     spent_gpu = 0.0
     chain = 0x2E8DCB4169E78CE1
     for tick in range(1, ticks + 1):
         # Population drift.
-        if rng.random() < 0.3:
+        if below(rng, 0.3):
             alive += 1
-        if rng.random() < 0.02:
+        if below(rng, 0.02):
             alive -= 1
             unknown += 1  # harvested: questionable, not gone
-        if rng.random() < 0.01 and unknown > 0:
+        if below(rng, 0.01) and unknown > 0:
             unknown -= 1
             alive += 1  # revived (on parole — the digest doesn't model that)
-        if rng.random() < 0.005:
+        if below(rng, 0.005):
             alive -= 1
             dead += 1
-        admitted = rng.randrange(0, 4) if tick % 10 == 0 else 0
-        vetoed = rng.randrange(0, 3) if tick % 10 == 0 else 0
+        admitted = between(rng, 4) if tick % 10 == 0 else 0
+        vetoed = between(rng, 3) if tick % 10 == 0 else 0
         spent_gpu += admitted * 0.8
         chain = (chain * 6364136223846793005 + 1442695040888963407) % (2**64)
         digest = {
@@ -222,7 +236,7 @@ def mock_digest_stream(
             "absent": 0,
             "admitted_last": admitted,
             "vetoed_last": vetoed,
-            "skipped_infeasible_last": rng.randrange(0, 2) if tick % 10 == 0 else 0,
+            "skipped_infeasible_last": between(rng, 2) if tick % 10 == 0 else 0,
             "spent_gpu_seconds": round(spent_gpu, 3),
             "spent_joules": round(spent_gpu * 25.0, 2),
             "spent_cents": 0.0,
