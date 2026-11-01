@@ -29,7 +29,12 @@ import { performance } from 'node:perf_hooks';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { MeshoptEncoder, MeshoptSimplifier } from 'meshoptimizer';
+// workers resolve bare specifiers from the process CWD — pin the package by
+// this module's own location so builds work from any directory
+const MESHOPT_SPEC = pathToFileURL(createRequire(import.meta.url).resolve('meshoptimizer')).href;
 const COMPILER = 'world-stream/0.1';
 const SCHEMA_RECIPE = 'world-stream.recipe/1';
 const SCHEMA_DELTA = 'world-stream.delta/1';
@@ -855,7 +860,7 @@ const WORKER_SOURCE = `
 const { parentPort } = require('node:worker_threads');
 const bytesOf = (ta) => new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength);
 (async () => {
-  const { MeshoptEncoder, MeshoptSimplifier } = await import('meshoptimizer');
+  const { MeshoptEncoder, MeshoptSimplifier } = await import(${JSON.stringify(MESHOPT_SPEC)});
   await Promise.all([MeshoptEncoder.ready, MeshoptSimplifier.ready]);
   ${encodeLodViews.toString()}
   ${processTemplate.toString()}
