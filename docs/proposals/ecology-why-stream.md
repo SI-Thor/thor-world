@@ -92,3 +92,42 @@ kernel can also expose the JSON over a localhost port that a
    like production code to your purity tests?
 
 — the ecology-thor team
+
+---
+
+## Round 2 (2026-11-01): through a core door, not a side channel
+
+The review of the draft was right, and this branch is the fix:
+world-mcp is a *pure client* of builder-ide's HTTP API (per-agent
+tokens, every action audited), so a why-stream resource must read from
+a core door — the draft's design (world-mcp consuming the ecology's
+own published JSON) was a side channel the audit log cannot see.
+
+**What changed on this branch** (`research/ecology-why-door`):
+
+- `why_stream.py` gained the door round: `fetch_digest(core)` reads
+  `GET /v1/why/summary` through the existing `CoreClient`; an unwired
+  core's 501 (with the seam named, the `/v1/world/scene` precedent)
+  raises `DoorNotWired` — surfaced, never faked. The live stream rides
+  the *existing* SSE door: `why_door_events(core)` filters
+  `why.digest` events by advancing tick. The frozen-contract parser,
+  the markdown render and the deterministic mock are unchanged.
+- `server.py` registers the resource: `world://why`
+  (text/markdown) reads through the door and degrades to a notice that
+  names the seam when the core has not wired it.
+- Tests: the door round with a fake CoreClient (the summary read, the
+  501 surfaced, the contract error, the stream filter, the purity law
+  still holding).
+
+**The door itself is proposed to builder-ide** —
+`docs/design/why-door.md` on its `research/ecology-bridge` branch:
+`POST /v1/why/digest` (the ecology's publisher door, one `why.digest`
+audit event per digest, written by the core's single writer like every
+other row), `GET /v1/why/summary` (the fold), and no new stream door
+(the event fanout already is one). The event type joins the closed set
+the way the tiles' four did — mirrored into the three event modules,
+one review.
+
+Until that door lands, this resource tells the truth: the ecology's
+digest has no audited path in, and a side channel would defeat the
+point.

@@ -283,6 +283,36 @@ def _register_resources(mcp: MCPServer, core: CoreClient, dirty: DirtyState) -> 
         }
 
     @mcp.resource(
+        "world://why",
+        name="the WHY ledger digest",
+        description="The ecology's attention ledger, read through the core's "
+                    "why door: purposes alive/unknown/dead, the last "
+                    "auction's admissions and vetoes, spend in the box's "
+                    "currencies, the chain hash over every decision. A "
+                    "watchdog stop is 'unknown' (questionable, not gone) — "
+                    "the digest is how an agent asks 'what happened and "
+                    "why' without reading a daemon log.",
+        mime_type="text/markdown",
+    )
+    async def resource_why() -> str:
+        from .why_stream import DoorNotWired, fetch_digest
+
+        try:
+            digest = await fetch_digest(core)
+        except DoorNotWired:
+            # the unwired-core answer, surfaced honestly (the
+            # /v1/world/scene precedent): the seam is named, the mock
+            # exists for pre-door builds, and nothing pretends
+            return ("# why — kernel digest\n\n"
+                    "The core does not serve the why door yet "
+                    "(`GET /v1/why/summary` answers 501 with the seam "
+                    "named). The door is proposed on builder-ide's "
+                    "research/ecology-bridge branch; until it is wired, "
+                    "the ecology's digest has no audited path into this "
+                    "resource — a side channel would defeat the point.")
+        return digest.render_markdown()
+
+    @mcp.resource(
         "world://dirty",
         name="the world.dirty cursor",
         description="What changed in the world and when: the cursor carries "

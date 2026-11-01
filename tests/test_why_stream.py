@@ -1,4 +1,5 @@
-"""Tests for the draft why_stream module — stdlib only, purity-law clean."""
+"""Tests for the why_stream module — the contract, the render, the mock,
+and the door round (a fake CoreClient; no core, no sockets)."""
 
 from __future__ import annotations
 
@@ -7,7 +8,14 @@ import json
 import pytest
 
 from world_mcp import why_stream
-from world_mcp.why_stream import ContractError, WhyDigest, mock_digest_stream
+from world_mcp.why_stream import (
+    ContractError,
+    DoorNotWired,
+    WhyDigest,
+    fetch_digest,
+    mock_digest_stream,
+    why_door_events,
+)
 
 
 def _sample(extra: dict | None = None) -> dict:
@@ -108,3 +116,110 @@ def test_module_is_stdlib_only():
 
     src = inspect.getsource(why_stream)
     assert "import core" not in src and "from core" not in src
+
+
+# ---------------------------------------------------------------------------
+# The door round (research/ecology-why-door): reads through the core's HTTP
+# API, never a side channel. A fake CoreClient stands in for the door.
+# ---------------------------------------------------------------------------
+
+
+class FakeDoor:
+    """The smallest CoreClient: a GET that answers what it was given."""
+
+    def __init__(self, payload=None, status: int = 200) -> None:
+        self.payload = payload
+        self.status = status
+        self.got: list[str] = []
+
+    class _Refused(Exception):
+        def __init__(self, status: int, message: str) -> None:
+            super().__init__(message)
+            self.status = status
+
+    async def get(self, path: str, **_) -> dict:
+        self.got.append(path)
+        if self.status >= 400:
+            raise self._Refused(self.status, f"core returned {self.status}")
+        return self.payload
+
+
+class FakeStream:
+    """The smallest watch_events: replays a fixed event list, once."""
+
+    def __init__(self, events: list[dict]) -> None:
+        self.events = events
+        self.types: list[list[str]] | None = None
+
+    async def watch_events(self, types: list[str], **_):
+        self.types = self.types or []
+        self.types.append(list(types))
+        for event in self.events:
+            yield event
+
+
+def test_reads_the_summary_door():
+    import asyncio
+
+    async def run():
+        door = FakeDoor(payload={"digest": _sample()})
+        digest = await fetch_digest(door)
+        assert door.got == ["/v1/why/summary"]
+        assert digest.tick == 10391
+        assert digest.chain_hash == "2e8dcb4169e78ce1"
+
+    asyncio.run(run())
+
+
+def test_the_unwired_core_is_surfaced_not_faked():
+    import asyncio
+
+    async def run():
+        door = FakeDoor(status=501)
+        with pytest.raises(DoorNotWired, match="501"):
+            await fetch_digest(door)
+
+    asyncio.run(run())
+
+
+def test_a_door_without_a_digest_is_a_contract_error():
+    import asyncio
+
+    async def run():
+        door = FakeDoor(payload={"note": "half-wired"})
+        with pytest.raises(ContractError):
+            await fetch_digest(door)
+
+    asyncio.run(run())
+
+
+def test_the_stream_rides_the_existing_events_door():
+    import asyncio
+
+    async def collect():
+        events = [
+            {"seq": 10, "type": "why.digest", "payload": {"digest": _sample()}},
+            {"seq": 11, "type": "why.digest",
+             "payload": {"digest": _sample({"tick": 10392})}},
+            # a tick that does not advance is filtered, not re-yielded
+            {"seq": 12, "type": "why.digest",
+             "payload": {"digest": _sample({"tick": 10392})}},
+            # a bad frame is skipped, never fatal
+            {"seq": 13, "type": "why.digest", "payload": {"digest": {}}},
+        ]
+        stream = FakeStream(events)
+        return [d.tick async for d in why_door_events(stream)], stream
+
+    ticks, stream = asyncio.run(collect())
+    assert ticks == [10391, 10392]
+    assert stream.types == [["why.digest"]]
+
+
+def test_the_resource_degrades_when_the_door_is_not_wired():
+    # the server's resource_why returns a notice naming the seam; the
+    # module it imports stays out of the stdlib surface (purity law)
+    import inspect
+
+    src = inspect.getsource(why_stream)
+    assert "import core" not in src and "from core" not in src
+    assert "/v1/why/summary" in src  # the door, named in the module

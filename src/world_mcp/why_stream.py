@@ -1,16 +1,31 @@
-"""why_stream — a draft `world://why` resource for world-mcp.
+"""why_stream — the `world://why` resource, reading from a core door.
 
-PUBLICATION-SURFACE MODULE, DRAFT FOR REVIEW (research/ecology-why-stream
-branch). Not wired into server.py — that integration belongs to the
-thor-world team. This module respects the purity law: stdlib only, no
-builder-ide imports, no server-side mutable state; it is a pure transform
-from the ecology-thor kernel's frozen JSON contract to MCP resource
-content.
+THE DOOR ROUND (research/ecology-why-door branch, 2026-11-01): the
+review of the draft module was right — world-mcp is a *pure client* of
+builder-ide's HTTP API (per-agent tokens, every action audited), so a
+why-stream resource must read from a core door, not from the ecology's
+own published JSON (a side channel the audit log cannot see). The door
+this module reads is `GET /v1/why/summary`, proposed to builder-ide on
+the research/ecology-bridge branch (`docs/design/why-door.md` there):
 
-The contract (ecology-thor docs/INTEGRATION.md) is append-only: new
-fields are appended, never reordered or removed. This parser therefore
-(a) requires the known fields below, and (b) tolerates any number of
-unknown trailing fields — forward compatibility by construction.
+  * the ecology process publishes its tick digest through
+    `POST /v1/why/digest` — one `why.digest` audit event per digest,
+    written by the core's single writer like every other row;
+  * `GET /v1/why/summary` folds the latest digest back out;
+  * the existing SSE door (`GET /v1/events?types=why.digest`) is the
+    live stream — no new stream door needed.
+
+Until the core wires the door, an unwired core answers 501 with the
+seam named (the `/v1/world/scene` precedent) and this module surfaces
+that honestly (:class:`DoorNotWired`); the deterministic mock stays for
+tests and pre-door builds.
+
+The purity law holds: no builder-ide import, no server-side mutable
+state; a pure transform from the door's JSON (the ecology's frozen,
+append-only contract) to MCP resource content. The contract is
+append-only: the parser requires the known fields below and tolerates
+any number of unknown trailing fields — forward compatibility by
+construction.
 """
 
 from __future__ import annotations
@@ -46,6 +61,19 @@ _REQUIRED_FIELDS = (
 
 class ContractError(ValueError):
     """The digest violated the frozen contract (missing/ill-typed field)."""
+
+
+class DoorNotWired(RuntimeError):
+    """The core does not serve the why door yet (501, the seam named).
+
+    The `/v1/world/scene` precedent: an unwired core answers 501 with
+    the seam's name in the body, and a client surfaces that rather than
+    pretending. The resource degrades to a notice; the mock remains
+    available for tests and pre-door builds.
+    """
+
+    def __init__(self, message: str = "the why door is not wired yet") -> None:
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -208,3 +236,53 @@ def mock_digest_stream(
             "events_dropped": 0,
         }
         yield json.dumps(digest)
+
+
+# ---------------------------------------------------------------------------
+# The door round: reads through builder-ide's HTTP API (CoreClient), never
+# through a side channel. TYPE_CHECKING only — the import stays out of the
+# runtime path so the module remains importable where httpx is absent
+# (the parser and the mock are stdlib-only; the door is world-mcp's edge).
+# ---------------------------------------------------------------------------
+
+async def fetch_digest(core) -> WhyDigest:
+    """The latest WHY digest, read from the core's door.
+
+    ``GET /v1/why/summary`` → :class:`WhyDigest`. A 501 raises
+    :class:`DoorNotWired` (the unwired-core answer, the seam named);
+    any other refusal propagates as the door's own error, verbatim —
+    a refusal is information, not a fault.
+    """
+    try:
+        payload = await core.get("/v1/why/summary")
+    except Exception as exc:  # narrowed below; CoreError lives at the edge
+        status = getattr(exc, "status", None)
+        if status == 501:
+            raise DoorNotWired(str(exc)) from exc
+        raise
+    digest = payload.get("digest") if isinstance(payload, dict) else None
+    if digest is None:
+        raise ContractError("the door answered without a digest")
+    return WhyDigest.from_mapping(digest)
+
+
+async def why_door_events(core, poll_types: tuple[str, ...] = ("why.digest",)):
+    """Digests as the core's log grows — the door-shaped replacement for
+    the draft's raw-kernel stream.
+
+    Rides the existing SSE door (``watch_events(types=["why.digest"])``):
+    one upstream connection, the core's own event fanout, every digest
+    auditable by seq. Yields only when the tick actually advances
+    (agents do not want a firehose; the door publishes, we filter).
+    """
+    last_tick: int | None = None
+    async for event in core.watch_events(list(poll_types)):
+        payload = event.get("payload") or {}
+        digest_raw = payload.get("digest") or payload
+        try:
+            digest = WhyDigest.from_mapping(digest_raw)
+        except ContractError:
+            continue  # one bad frame is skipped, never fatal
+        if digest.tick != last_tick:
+            last_tick = digest.tick
+            yield digest
