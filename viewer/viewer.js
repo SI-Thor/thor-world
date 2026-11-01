@@ -21,6 +21,7 @@ import {
   MeshStandardMaterial, BufferGeometry, BufferAttribute, InstancedMesh,
   InstancedBufferAttribute, Matrix4, Color, Vector3, Quaternion,
   MathUtils, ACESFilmicToneMapping, DynamicDrawUsage,
+  Texture, SRGBColorSpace, RepeatWrapping, ClampToEdgeWrapping,
 } from './vendor/three.webgpu.js';
 import { MeshoptDecoder } from './vendor/meshopt_decoder.module.js';
 
@@ -67,6 +68,24 @@ async function readAccessorBytes(json, bin, accessor) {
 
 const TYPED = { 5120: Int8Array, 5121: Uint8Array, 5122: Int16Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array };
 
+// glTF image → three Texture (embedded in the BIN chunk as a plain
+// bufferView; PNG/JPEG bytes as the compiler stored them)
+async function loadTexture(json, bin, texIndex) {
+  const tex = json.textures[texIndex];
+  const img = json.images[tex.source];
+  const bv = json.bufferViews[img.bufferView];
+  const bytes = bin.subarray(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength);
+  const bmp = await createImageBitmap(new Blob([bytes], { type: img.mimeType || 'image/png' }));
+  const t = new Texture(bmp);
+  t.flipY = false; // glTF UV convention
+  t.colorSpace = SRGBColorSpace;
+  const s = json.samplers?.[tex.sampler ?? 0];
+  t.wrapS = s?.wrapS === 10497 ? RepeatWrapping : ClampToEdgeWrapping;
+  t.wrapT = s?.wrapT === 10497 ? RepeatWrapping : ClampToEdgeWrapping;
+  t.needsUpdate = true;
+  return t;
+}
+
 // ---------------------------------------------------------------- scene load
 
 async function loadWorld(manifest) {
@@ -74,12 +93,18 @@ async function loadWorld(manifest) {
   const { json, bin } = glb;
   await MeshoptDecoder.ready;
 
-  const materials = json.materials.map((m) => new MeshStandardMaterial({
-    color: new Color().fromArray(m.pbrMetallicRoughness?.baseColorFactor ?? [0.8, 0.8, 0.8, 1]),
-    roughness: m.pbrMetallicRoughness?.roughnessFactor ?? 1,
-    metalness: m.pbrMetallicRoughness?.metallicFactor ?? 0,
-    side: m.doubleSided ? 2 : 0,
-  }));
+  const materials = [];
+  for (const m of json.materials ?? []) {
+    const pbr = m.pbrMetallicRoughness ?? {};
+    const def = {
+      color: new Color().fromArray(pbr.baseColorFactor ?? [0.8, 0.8, 0.8, 1]),
+      roughness: pbr.roughnessFactor ?? 1,
+      metalness: pbr.metallicFactor ?? 0,
+      side: m.doubleSided ? 2 : 0,
+    };
+    if (pbr.baseColorTexture) def.map = await loadTexture(json, bin, pbr.baseColorTexture.index);
+    materials.push(new MeshStandardMaterial(def));
+  }
 
   for (const tpl of manifest.templates) {
     const node = json.nodes[tpl.node];
@@ -130,6 +155,19 @@ async function loadWorld(manifest) {
           for (let c = 0; c < 3; c++) normals[v * 3 + c] = nrmQ[v * 4 + c] / 127;
         geometry.setAttribute('normal', new BufferAttribute(normals, 3));
       } else geometry.computeVertexNormals();
+      if (prim.attributes.TEXCOORD_0 !== undefined) {
+        const uvAcc = json.accessors[prim.attributes.TEXCOORD_0];
+        const uvBuf = await readAccessorBytes(json, bin, uvAcc);
+        let uvs;
+        if (uvAcc.normalized && uvAcc.componentType === 5123) {
+          const q = new Uint16Array(uvBuf.buffer, uvBuf.byteOffset, uvAcc.count * 2);
+          uvs = new Float32Array(uvAcc.count * 2);
+          for (let i = 0; i < q.length; i++) uvs[i] = q[i] / 65535;
+        } else {
+          uvs = new Float32Array(uvBuf.buffer, uvBuf.byteOffset, uvAcc.count * 2);
+        }
+        geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
+      }
 
       const idxBuf = await readAccessorBytes(json, bin, idxAcc);
       const IdxT = TYPED[idxAcc.componentType];

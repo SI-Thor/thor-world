@@ -5,14 +5,19 @@ The live wire between a world generated on the Jetson AGX Thor and the people an
 | Component | What it is | Where | Status |
 |---|---|---|---|
 | **world-mcp** (`src/`, `tests/`, `demo/`) | An MCP server over builder-ide's core: the only way agents (Claude Code, zcode, mcode, cloud tile authors) work on a world, through the core's typed doors. Every action is recorded with its author. | Thor or ProArt | 38/38 tests against a live core, per-agent tokens, recipe versions and diffs, plan intentions; the "make these sturdier" demo runs end to end ([design](docs/design.md)) |
-| **world-stream** (`compiler/`, `viewer/`) | A deterministic recipe-to-glTF compiler (real LOD chains, GPU instancing, quantization + meshopt, provenance), a `since_version` delta channel over SSE, and a three.js viewer (WebGPU, with a WebGL2 fallback). | Compiler on the Thor; viewer in Chrome on the ProArt | Byte-identical builds across the Thor and an x86 ProArt; a 629 B delta for one moved table; 3.51 M triangles over all LODs in 43.8 MB, compiled in 6.7 s ([design](docs/stream-design.md), [numbers](docs/measurements.md)) |
+| **world-stream** (`compiler/`, `viewer/`) | A deterministic recipe-to-glTF compiler (real LOD chains, GPU instancing, quantization + meshopt, provenance, spatially chunked simplification for huge templates), a `since_version` delta channel over SSE, and a three.js viewer (WebGPU, with a WebGL2 fallback) that now renders **colour** — flat material constants (deterministic, byte-identical rebuilds) or baked base-colour textures (content-hashed). | Compiler on the Thor; viewer in Chrome on the ProArt | Byte-identical builds across the Thor and an x86 ProArt (chunked and unchunked); a 629 B delta for one moved table; 3.51 M triangles over all LODs in 43.8 MB compiled in 6.7 s — or 4.98 s at jobs 14 with the chunked shell ([design](docs/stream-design.md), [numbers](docs/measurements.md)) |
 
 It fills the role of the private companion repo of the `maquette` Infinigen fork (an MCP server plus a browser viewer). It is our own design, built for the Thor; see builder-ide's [`docs/research/maquette.md`](https://github.com/SI-Thor/builder-ide/blob/main/docs/research/maquette.md) for what we learned from that fork's public half.
 
 **Open for the owner:**
-- the colour pipeline: Infinigen materials stall the stock glTF exporter, so today's world is grey;
-- a source build of `toktx` (KTX-Software, Apache-2.0) for KTX2 textures;
-- Warp simplification for the room-shell serial tail;
+- a source build of `toktx` (KTX-Software, Apache-2.0) — or of any BCn
+  encoder, since the round-2 probes found no aarch64 wheel (`nvcompress`
+  absent, no BC7 on PyPI); PNG rides the wire today, WebP measured at
+  5.5× smaller;
+- the five room-shell meshes whose Cycles bake completes without writing
+  (both devices, recorded in `bake_report.json → failures`);
+- Warp simplification for total-work reduction (chunking already broke
+  the serial *tail*: jobs 14 is now 2.1× faster than jobs 1);
 - a two-minute WebGPU check in desktop Chrome.
 
 Licence: MIT. Part of [builder-ide](https://github.com/SI-Thor/builder-ide); world engine: [infinigen-thor](https://github.com/SI-Thor/infinigen-thor).

@@ -98,21 +98,39 @@ under a screen-pixel budget (§6), with hysteresis.
 Draco stays legal for *exchange* files; it is wrong for a wire whose
 invariant is "same recipe, same bytes".
 
-### 1.5 KTX2/Basis textures (defect #2 answered — honestly)
+### 1.5 Colour and textures (defect #2 answered — in two measured tiers)
 
 Maquette probed `toktx` and never invoked it; textures stayed PNG. Our
-wire reserves `KHR_texture_basisu` and the design is: textures quantize and
-transcode to KTX2/UASTC (scene textures) or ETC1S (long-tail materials) on
-the Thor, in the compiler's texture stage, declared in the manifest with
-per-texture bytes. **Today this is designed, not measured** — and it is now
-also the *colour* pipeline, not just compression: the Infinigen 2.0
-living-room materials stall the bpy glTF exporter outright (its node-graph
-search explodes; measurements.md §1.1), so the slice's export carries
-geometry with flat materials and no base colours. Baking/flattening
-material colours in the warm-scene server (Cycles bake, or a cheap
-average-colour pass) is the prerequisite for a coloured viewer; `toktx`
-itself needs a source build on the Thor (§7), with the GPU alternative
-(`cuda-bcu` / BC7 on the Blackwell SMs) sketched in §5.2.
+wire reserves `KHR_texture_basisu`, and round 2 measured the *colour*
+half that must exist before any transcode question is worth asking —
+the Infinigen 2.0 living-room materials stall the bpy glTF exporter
+outright (its node-graph search explodes; measurements.md §1.1), so
+colour cannot ride the stock export. Two tiers, both from the resident
+scene on the Thor:
+
+- **Flatten (the fast path, deterministic).** 32² Cycles bakes per mesh
+  object → per-material-slot average base colour, quantized to 8-bit sRGB
+  steps → every (object, slot) gets a new *flat* Principled material
+  (object-linked, so shared meshes stay safe) → the export carries clean
+  node trees the stalled gatherer never trips on. Quantization is what
+  makes it deterministic — bake pixels jitter ±1 LSB on this box (§3 of
+  the warm-scene research; re-measured for bakes), and the per-slot mean
+  sits far from an 8-bit boundary.
+- **Bake (the quality path).** 512² Cycles bakes per object — base
+  colour, roughness, normal — onto **fresh xatlas UV atlases** (the
+  generator's own UVMaps overlap catastrophically on many props — a
+  screw spiral shares its texels ~68 deep — so they cannot be bake
+  targets). Base-colour PNGs ride the wire (`baseColorTexture`, content-
+  hashed into the template identity); roughness/metallic travel as
+  scalars read off the material graphs by a bounded visited-set walk.
+  **Where determinism ends is measured and stated**: bake *pixels* are
+  not bit-deterministic on this build, so the textured world is pinned
+  by its content hash, not byte-reproducible — the deterministic
+  coloured wire today is the flatten tier.
+
+The KTX2/UASTC–ETC1S stage stays designed (§7 dependencies): the round-2
+decision (measurements.md §11) is PNG on the wire, WebP measured as the
+size lever, `toktx` still wanting Casey's source-build OK.
 
 ### 1.6 The `since_version` delta (defect #5 answered)
 
@@ -168,18 +186,23 @@ it (§2.4). Measured: the generation and export numbers are in
 measurements.md (short version: generation is 16 s; the glTF *file
 export* is the seam the zero-copy path removes).
 
-### 2.2 Mesh simplification — CPU today, GPU next
+### 2.2 Mesh simplification — CPU today, chunked across workers; GPU next
 
-**CPU (today, measured):** meshopt quadric simplification in WASM, one
-template per task, fanned across worker threads (`--jobs N`). On the 14
-Neoverse cores this is embarrassingly parallel per-template — up to the
-scene's biggest template, which is the serial tail: the living room
-compiles in 6.74 s at `--jobs 1` and 8.06 s at `--jobs 14` because one
-1.77 M-triangle shell template dominates (measurements.md §4).
-Determinism is preserved because assembly order is fixed by template
-hash, not completion order (verified: `--jobs 1` ≡ `--jobs 14`
-byte-identically on the living room, `--jobs 1` ≡ `--jobs 4` on the
-fixture — and cross-machine, x86 vs aarch64, on both scenes).
+**CPU (measured):** meshopt quadric simplification in WASM, one template
+per task, fanned across worker threads (`--jobs N`). Round 1 found the
+per-template fan has a serial tail — one 1.77 M-triangle shell template
+made `--jobs 14` *slower* than `--jobs 1`. Round 2 answers it with
+**spatial chunking**: a template above the recipe's `chunk_above`
+threshold splits into contiguous chunks (recursive median split of
+triangle centroids — a pure function of the geometry), each chunk
+simplifies on its own worker with `LockBorder` (cut edges are open edges;
+locked border vertices keep neighbouring chunks' LODs mated — no cracks),
+and the per-chunk LODs stitch back into one template level by level.
+Measured (measurements.md §9): jobs 14 drops 8.06 → 4.98 s and now beats
+jobs 1 by 2.1×, byte-identical across job counts and across machines; the
+price is +84 % file bytes, because locked borders retain triangles.
+Determinism is preserved because chunking, like assembly order, is fixed
+by content, not completion order.
 
 **GPU (designed, next experiment):** the quadric solver maps to Warp
 (NVIDIA's Python→CUDA, MIT; already proven on this box by the v2
@@ -189,8 +212,8 @@ positions read straight from the resident scene's unified-memory buffers
 pass on the largest living-room template must beat the measured CPU
 per-template time by ≥ 5× at equal output (same collapse sequence is *not*
 required — the LOD is a new artifact, versioned by content hash, not a
-bitwise match of the CPU LOD). Until that experiment runs, GPU
-simplification stays a design line with a number pending, not a claim.
+bitwise match of the CPU LOD). Chunking now supplies the CPU floor that
+falsifier has to beat *per chunk* (~220 k triangles).
 
 ### 2.3 Quantization + entropy coding (measured, CPU)
 
@@ -308,7 +331,13 @@ recipe/delta formats, dev server and viewer are ours, dependency-free.
 |---|---|---|
 | KTX-Software (`KhronosGroup/KTX-Software`) | Apache-2.0 | `toktx` for KTX2/UASTC + ETC1S texture transcode (§1.5); no mainstream aarch64 binary, a source build on the Thor |
 | meshoptimizer C library (native, not the npm WASM) | MIT | only if the WASM simplifier becomes the bottleneck and the Warp port is not taken — a native aarch64 build with all 14 cores would be the fallback |
-| `cuda-bcu` / BC7enc GPU texture path | MIT | the §2.2-style GPU alternative to toktx (BC7 on the SMs); experimental, decided after toktx numbers |
+| ~~`cuda-bcu` / BC7enc GPU texture path~~ | MIT | **probed round 2, absent**: no `nvcompress` on the box, no BC7 wheel on PyPI for aarch64 — a GPU BCn path needs a source build too, so it joins toktx in the same OK-request (measurements.md §11) |
+
+**Round-2 additions (in use):** `xatlas` 0.0.11 (PyPI wheel, MIT) for the
+bake tier's UV atlases — byte-deterministic, cached by geometry hash;
+Pillow 13.0.0 (HPND/MIT-CMU) for the WebP measurement and PNG handling in
+the bake venv. Both live in a scratch venv built from the v2 venv's own
+vendored bpy wheel; the v2 venv itself stays untouched.
 
 **Deliberately not adopted:** glTF-Transform (MIT, excellent) as the
 *compiler's* core — its writer does not promise byte-stable output, and
@@ -323,16 +352,19 @@ for the wire, is rejected on determinism (§1.4).
 
 | claim | status |
 |---|---|
-| deterministic full build (same recipe+source → identical bytes) | **measured** (in-process, cross-job-count 1≡14 on the living room, cross-machine x86 ≡ aarch64 on both scenes) |
+| deterministic full build (same recipe+source → identical bytes) | **measured** (in-process, cross-job-count 1≡14 on the living room, cross-machine x86 ≡ aarch64 on both scenes — and on the chunked build) |
 | source export determinism (Infinigen 2.0 same seed → identical GLB) | **measured** (two full generates → byte-identical `source.glb`, sha256-equal; the `.blend`s differ — see measurements.md §1) |
 | real LOD chains with per-LOD triangle counts | **measured** (fixture + living room; chains stop honestly when simplification stalls) |
 | instancing dedup ratio on a real scene | **measured** (living room: 55 templates / 110 instances, 2.07× file shrink with all LODs aboard) |
 | delta size vs full file | **measured** (fixture 608 B / 0.79 %; living room 629 B / 0.0014 %; byte-identical cross-machine) |
-| compile wall clock, 1 vs 14 jobs on the Thor | **measured** (6.74 s vs 8.06 s — jobs 14 *slower*: one 1.77 M-tri shell template is the serial tail; measurements.md §4) |
+| compile wall clock, 1 vs 14 jobs on the Thor | **measured twice**: unchunked 6.74 vs 8.06 s (jobs 14 *slower* — one 1.77 M-tri shell template is the serial tail); chunked (target 400k) 10.60 vs **4.98 s** — parallelism pays, +84 % bytes for locked borders (measurements.md §9) |
 | NVENC filmstrip encode | **measured** (h264 0.415 s / hevc 0.230 s for 90 frames at load ~60; byte-identical re-runs; av1 = no) |
-| KTX2/Basis textures | designed (the exporter stall makes the colour pipeline the prerequisite; toktx needs Casey's OK) |
-| GPU (Warp) simplification | designed + falsifier named (§2.2) — and §4 gives it its reason: the shell template is the compile |
+| colour: flatten path | **measured** (32² GPU bakes → 8-bit-quantized per-slot constants → fast, stall-free export; two independent runs byte-identical — measurements.md §10) |
+| colour: bake path | **measured** (512² base/rough/normal per object on fresh xatlas atlases; bake pixels ±1 LSB — the textured world is content-hashed, not byte-reproducible, stated exactly in measurements.md §10) |
+| textures without toktx | **measured** (PNG shipped; WebP q85 bytes measured; nvcompress absent, BC7 wheel absent — §11) |
+| KTX2/Basis transcode | designed (needs a toktx source build — Casey's OK) |
+| GPU (Warp) simplification | designed + falsifier named (§2.2); chunking supplies the per-chunk CPU floor it must beat |
 | zero-copy resident-scene export | designed; the seam it removes is measured (16 s generation vs a glTF *file* export that the stock exporter can't even finish on these materials — §1.1) |
-| viewer on the ProArt's Chrome | **measured headless**: WebGPU has no adapter under WSL2 headless; the WebGL2 (SwiftShader) fallback engages and the badge reports it; both demo loops screenshotted. WebGPU on desktop Chrome = two-minute check for Casey |
+| viewer on the ProArt's Chrome | **measured headless**: WebGPU has no adapter under WSL2 headless; the WebGL2 (SwiftShader) fallback engages and the badge reports it; fixture, living-room, chunked and coloured demo loops screenshotted. WebGPU on desktop Chrome = two-minute check for Casey |
 
 Numbers live in `docs/measurements.md`, each with the box's state beside it.
