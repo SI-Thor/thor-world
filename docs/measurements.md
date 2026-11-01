@@ -278,3 +278,125 @@ running):
   single-threaded compile got slower (6.74 → 10.60 s) — the lever buys
   parallel wall, not total work. The Warp/clustered simplifier (§2.2)
   remains the answer for total-work reduction.
+## 10. Colour, measured both ways (flatten and bake)
+
+The world was grey because Infinigen 2.0's procedural materials stall the
+glTF exporter (§1.1). Round 2 measured both paths the brief names, on the
+same `export1/scene.blend`, in the v2-vendored bpy 4.2 wheel installed into
+a scratch venv (the v2 venv stays read-only; PyPI is reachable from the
+box; `xatlas` 0.0.11, MIT, from PyPI). Everything ran under
+`flock ~/lm-wt/heavy.lock` with the ≥ 25 GB check — the lock mattered:
+other seats' fp8/TRELLIS and CRDT experiments held it for 10–60 minute
+stretches all afternoon, and every wall-clock below includes its queue.
+
+**The scene surveyed** (`recon_colour.py`): 109 render-visible mesh
+objects (1 more is render-hidden — an Infinigen affordance helper), 93
+materials of which 71 are pure node-group materials (the exporter-stall
+kind), 17 carry flat constants, 5 have linked Principled base colour; 98
+of 117 meshes carry a UV layer — **which the bake must not trust**.
+
+### 10.1 UVs first: the generator's UVMaps overlap catastrophically
+
+`uvcheck` rasterizes sampled triangles into a UV grid and flags texels
+claimed by triangles whose 3D centroids are far apart. The generator's
+own UVMaps are bake-hostile: a screw-spiral cylinder shares its texels
+~68 layers deep, the sofa ~22×, the TV storage ~18×. Baking onto them
+would let surfaces overwrite each other's texels. So every mesh ≤ 300k
+triangles gets a **fresh xatlas atlas** (byte-deterministic: two runs of
+the same mesh give identical UV bytes — verified before adopting;
+cached by geometry hash in the scratch dir, so all runs shared one
+unwrap: 0.088 s warm). xatlas charting is superlinear — the 1.77 M-tri
+room shell burned 40+ CPU-minutes on one `generate()` — so the three
+objects riding that mesh keep their own UVMap instead (uvcheck showed
+the shell is *not* an overlap offender; walls are simple boxes).
+
+### 10.2 The flatten tier (fast path): 8-bit-quantized averages
+
+32² Cycles GPU bakes per object (DIFFUSE/COLOR, 1 sample, no adaptive
+sampling) → per-material-slot mean base colour weighted by face area,
+quantized to 8-bit sRGB steps → every (object, slot) gets a new **flat
+Principled** material assigned at both the object and mesh-data levels
+(the glTF exporter reads the data layer; an OBJECT-linked override never
+reaches it and the stall returns — observed live, 40+ exporter-minutes
+silent) → export with materials=EXPORT.
+
+| flatten (GPU, 32²) | |
+|---|---|
+| bake loop, 109 objects | 547 s total (5.02 s/object mean — dominated by per-bake Cycles session overhead, not texels) |
+| slot colours produced | 149 |
+| graph walks (bounded, visited-set) | 0.198 s for all 93 materials |
+| glTF export | **3.0 s** (the stall is gone; round-1's grey export was 2.8 s) |
+| `source_flat.glb` | 93,939,976 B (grey source: 90,827,084 B — the colour costs 3.4 %, all of it materials) |
+
+**Determinism, measured**: two independent flatten runs — separate
+processes, separate scene loads, separate bakes — produce **byte-identical
+`source_flat.glb`** (sha256 `919886d8…` both) with **149/149 identical
+slot colours**. The 8-bit quantization is what buys this: bake pixels
+jitter at the LSB on this build (builder-ide's warm-scene research §3
+measured it for renders), and the per-slot mean sits far from a quantize
+boundary. The fast path is a deterministic coloured wire.
+
+**In the viewer** (ProArt, headless Chromium, WebGL2/SwiftShader as in
+§6): the flat world compiles to `world@1.glb` (44,050,816 B, 74
+templates / 132 instances — materials=EXPORT splits multi-slot meshes
+into `.pN` primitives, so 132 entries vs the grey export's 110; the
+compile is the same 5 s), and the live demo applies the same table-move
+delta — ledger card, version chip, nothing else moves
+(`livingroom-flat-v1/v2.png`).
+
+### 10.3 The bake tier (quality path): 512² per-object atlases
+
+Cycles bakes per object — base colour (DIFFUSE/COLOR), roughness, normal
+— at 512², saved as PNGs, plus a 64-sample Cycles beauty render as
+ground truth and a `source_textured.glb` whose materials are flat
+Principled + Image Texture (base colour through the wire; roughness and
+metallic stay scalars read off the graphs by the bounded walk; normal
+maps are measured, not shipped — the thin client leaves them to the
+KTX2 stage).
+
+| bake (GPU, 512², 3 maps/object) | |
+|---|---|
+| per object | ~16.0 s mean (three bakes + three PNG encodes + bake-session overhead) |
+| texture bytes, first 70 objects | 13,180,960 B PNG (base+rough+normal) |
+| same 70 objects as WebP q85 | 2,384,414 B — **0.181× (5.5× smaller)**, and Pillow's WebP encode is byte-deterministic for fixed settings |
+
+**Bake determinism — better than the renders**: the two independent GPU
+bake runs produced **byte-identical PNGs for every comparable object**
+(70/70 pairs, max abs delta 0.0 at 8-bit, mean 0.0). The ±1 LSB noise of
+builder-ide's warm-scene *renders* comes from multi-sample accumulation;
+a 1-sample bake evidently does not take that path. The textured world's
+content is therefore reproducible run-to-run on this box/device/settings
+— the caveat stays recorded: this is same-device determinism, not the
+cross-machine guarantee the geometry wire has.
+
+**Where it honestly breaks**: five room-shell-family objects (the wall,
+sill and skirting meshes) fail their bake identically on GPU **and** CPU
+with `Image 'WB_bake_base' does not have any image data` — the bake
+completes without writing. The loop records them and continues; their
+slots fall back to neutral grey in the textured export (they carry the
+flat tier's colours in `source_flat.glb`). Root cause not chased further
+this round; named in `bake_report.json → failures`.
+
+### 10.4 What the wire ships
+
+PNG base-colour textures ride the wire (content-hashed into template
+identity, §5 of the design note); roughness/metal are scalars; the KTX2
+hook (`KHR_texture_basisu` reserved in the design, images/samplers/
+textures already in the compiled file) is where the 5.5× WebP-class
+saving becomes a GPU-native BCn/ETC1S transcode — still gated on a
+`toktx` source build (Casey's OK). No `nvcompress` on the box; no BC7
+wheel on PyPI for aarch64 (probes below).
+
+## 11. Textures without toktx — the probes
+
+- `nvcompress` (NVIDIA Texture Tools): **absent** from the box, and a
+  source build is exactly what Casey hasn't approved.
+- BC7 via PyPI wheel: `pip download bc7enc` → no matching distribution
+  for aarch64; `texcomp` → not found. **No GPU/BCn path exists today
+  without a source build.**
+- WebP via Pillow (already in the venv family): **5.5× smaller than PNG
+  at q85, byte-deterministic encode** — the pragmatic size lever if the
+  wire needs it before KTX2 lands; lossy, so it would be a per-texture
+  opt-in, not the default.
+- Decision for this round: **ship PNG** (lossless, deterministic,
+  browser-native), keep the KTX2 hook reserved.
