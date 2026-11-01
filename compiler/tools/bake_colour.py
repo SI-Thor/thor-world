@@ -548,16 +548,33 @@ def main() -> int:
         img_rough = make_image("WB_bake_rough", args.res, srgb=False)
         img_norm = None if args.skip_normal else make_image("WB_bake_norm", args.res, srgb=False)
         t_b = time.perf_counter()
+        failures = []
         for n, o in enumerate(objects):
             t1 = time.perf_counter()
             safe = o.name.replace(".", "_")
-            bake_object(o, img_base, "DIFFUSE", pass_filter={"COLOR"})
-            save_png(img_base, texdir / f"{safe}_base.png")
-            bake_object(o, img_rough, "ROUGHNESS")
-            save_png(img_rough, texdir / f"{safe}_rough.png")
-            if img_norm is not None:
-                bake_object(o, img_norm, "NORMAL")
-                save_png(img_norm, texdir / f"{safe}_norm.png")
+            try:
+                bake_object(o, img_base, "DIFFUSE", pass_filter={"COLOR"})
+                save_png(img_base, texdir / f"{safe}_base.png")
+                bake_object(o, img_rough, "ROUGHNESS")
+                save_png(img_rough, texdir / f"{safe}_rough.png")
+                if img_norm is not None:
+                    bake_object(o, img_norm, "NORMAL")
+                    save_png(img_norm, texdir / f"{safe}_norm.png")
+            except RuntimeError as e:
+                # one un-bakeable object must not kill a 30-minute pass —
+                # record it, drop the poisoned buffers, carry on grey
+                log(f"FAILED bake for {o.name}: {e}")
+                failures.append(o.name)
+                for img in (img_base, img_rough, img_norm):
+                    if img is not None:
+                        try:
+                            bpy.data.images.remove(img)
+                        except Exception:  # noqa: BLE001
+                            pass
+                img_base = make_image("WB_bake_base", args.res, srgb=True)
+                img_rough = make_image("WB_bake_rough", args.res, srgb=False)
+                img_norm = None if args.skip_normal else make_image("WB_bake_norm", args.res, srgb=False)
+                continue
             per_obj[o.name] = round(time.perf_counter() - t1, 4)
             if (n + 1) % 20 == 0:
                 log(f"bake {n + 1}/{len(objects)}  ({per_obj[o.name]:.2f} s for {o.name[:32]})")
@@ -566,6 +583,7 @@ def main() -> int:
             "mean_per_object_s": round(float(np.mean(list(per_obj.values()))), 3),
             "max_per_object_s": round(max(per_obj.values()), 3),
             "max_object": max(per_obj, key=per_obj.get),
+            "failures": failures,
         }
         for p in texdir.glob("*.png"):
             kind = "normal" if p.name.endswith("_norm.png") else ("rough" if p.name.endswith("_rough.png") else "base")
@@ -584,11 +602,14 @@ def main() -> int:
                 prim = nt.nodes.new("ShaderNodeBsdfPrincipled")
                 out_n = nt.nodes.new("ShaderNodeOutputMaterial")
                 nt.links.new(prim.outputs["BSDF"], out_n.inputs["Surface"])
-                img = bpy.data.images.load(str(texdir / f"{safe}_base.png"), check_existing=True)
-                img.colorspace_settings.name = "sRGB"
-                tex = nt.nodes.new("ShaderNodeTexImage")
-                tex.image = img
-                nt.links.new(tex.outputs["Color"], prim.inputs["Base Color"])
+                png_path = texdir / f"{safe}_base.png"
+                if png_path.exists():
+                    img = bpy.data.images.load(str(png_path), check_existing=True)
+                    img.colorspace_settings.name = "sRGB"
+                    tex = nt.nodes.new("ShaderNodeTexImage")
+                    tex.image = img
+                    nt.links.new(tex.outputs["Color"], prim.inputs["Base Color"])
+                # missing PNG = the recorded bake failure — neutral grey fallback
                 g = graphs.get(f"{o.name}__s{i}", {})
                 prim.inputs["Roughness"].default_value = g.get("roughness") if g.get("roughness") is not None else 0.9
                 prim.inputs["Metallic"].default_value = g.get("metallic") if g.get("metallic") is not None else 0.0

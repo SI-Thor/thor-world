@@ -39,7 +39,7 @@ run_step bakeA/cycles_beauty.png bakeA.log $PY bake_colour.py --blend $BLEND --m
 echo "=== bake B (GPU, 512²) — drift twin"
 run_step bakeB/cycles_beauty.png bakeB.log $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device GPU --outdir bakeB
 echo "=== bake C (CPU, 512², base+rough) — the deterministic-device check"
-run_step bakeCPU/bake_report.json bakeCPU.log $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device CPU --skip-normal --outdir bakeCPU
+run_step bakeCPU/textures bakeCPU.log $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device CPU --skip-normal --outdir bakeCPU
 
 echo "=== drift: bake A vs B (pixel stats per PNG pair)"
 $PY - bakeA bakeB <<'EOF'
