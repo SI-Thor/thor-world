@@ -358,7 +358,7 @@ KTX2 stage).
 |---|---|
 | bake loop, 104 objects | 1,707 s total (**16.4 s/object mean**, max 19.2 s — three bakes + three PNG encodes + per-bake session overhead) |
 | texture bytes (base / rough / normal) | 15,973,542 / 4,770,720 / 33,901,052 B — normals dominate; only base colour rides the wire |
-| same base set as WebP q85 | **0.181× PNG (5.5× smaller)**, and Pillow's WebP encode is byte-deterministic for fixed settings |
+| full base set as WebP q85 | 15,973,542 → 2,917,634 B = **0.183× PNG (5.5× smaller)**, and Pillow's WebP encode is byte-deterministic for fixed settings |
 | glTF export (textured materials) | 3.5 s — still stall-free |
 | `source_textured.glb` | 109,926,480 B, sha256 `07aca919…` |
 | Cycles beauty render (64 spp, 768²) | 12.1 s — but **black**: the bare `.blend` carries no interior lighting rig (that lives in the Infinigen render task), so the enclosed room renders unlit; the viewer screenshots are the look-proof |
@@ -372,14 +372,19 @@ per-material-atlas KTX2 stage would claw back. Live LOD mix at the
 screenshot instant: 43/22/12/26 — the textures follow every LOD swap
 (`livingroom-textured-v1/v2.png`).
 
-**Bake determinism — better than the renders**: the two independent GPU
-bake runs produced **byte-identical PNGs for every comparable object**
-(70/70 pairs, max abs delta 0.0 at 8-bit, mean 0.0). The ±1 LSB noise of
-builder-ide's warm-scene *renders* comes from multi-sample accumulation;
-a 1-sample bake evidently does not take that path. The textured world's
-content is therefore reproducible run-to-run on this box/device/settings
-— the caveat stays recorded: this is same-device determinism, not the
-cross-machine guarantee the geometry wire has.
+**Bake determinism — better than the renders**: two independent GPU bake
+runs produced **byte-identical PNGs for every one of the 104 comparable
+objects** (104/104 pairs, max abs delta 0.0 at 8-bit, mean 0.0). The ±1
+LSB noise of builder-ide's warm-scene *renders* comes from multi-sample
+accumulation; a 1-sample bake evidently does not take that path. The
+textured world is reproducible run-to-run — **per device**: the CPU pass
+(good for 13.4 s/object over its two maps, 1,390 s total; the GPU's
+beauty render runs it 8.2× faster, 12.1 s vs 99.6 s) produces slightly
+different pixels (only 33/104 base PNGs sha-equal to the GPU's, mean
+delta 0.34 8-bit steps, max 255 — same-device reruns are exact,
+cross-device is not). So the textured world's sha (`07aca919…` GPU,
+`1295cdaf…` CPU) pins device+settings, and the flatten tier remains the
+byte-stable wire.
 
 **Where it honestly breaks**: five room-shell-family objects (the wall,
 sill and skirting meshes) fail their bake identically on GPU **and** CPU
@@ -403,9 +408,9 @@ wheel on PyPI for aarch64 (probes below).
 
 - `nvcompress` (NVIDIA Texture Tools): **absent** from the box, and a
   source build is exactly what Casey hasn't approved.
-- BC7 via PyPI wheel: `pip download bc7enc` → no matching distribution
-  for aarch64; `texcomp` → not found. **No GPU/BCn path exists today
-  without a source build.**
+- BC7 via PyPI wheel: `pip download bc7enc` → "no matching distribution"
+  (versions: none) for aarch64; `texcomp` → same. **No GPU/BCn path
+  exists today without a source build.**
 - WebP via Pillow (already in the venv family): **5.5× smaller than PNG
   at q85, byte-deterministic encode** — the pragmatic size lever if the
   wire needs it before KTX2 lands; lossy, so it would be a per-texture
