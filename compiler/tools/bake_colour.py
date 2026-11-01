@@ -369,34 +369,36 @@ def save_png(img, path: Path) -> None:
 
 def slot_average(obj, px: np.ndarray, res: int) -> list[dict]:
     """Per-material-slot mean base colour: sample the bake at each face's UV
-    centroid (nearest texel), weight faces by area, quantize to 8-bit sRGB."""
+    centroid (nearest texel), weight faces by area, quantize to 8-bit sRGB.
+    Vectorized — the shell alone has 1.77M polygons."""
     mesh = obj.data
+    if len(mesh.polygons) == 0:
+        return []
     uv_l = mesh.uv_layers.active
     uvs = np.empty(len(mesh.loops) * 2, dtype=np.float64)
     uv_l.data.foreach_get("uv", uvs)
     uvs = uvs.reshape(-1, 2)
-    mat_idx = np.empty(len(mesh.polygons), dtype=np.int64)
+    n_poly = len(mesh.polygons)
+    mat_idx = np.empty(n_poly, dtype=np.int64)
     mesh.polygons.foreach_get("material_index", mat_idx)
-    areas = np.empty(len(mesh.polygons), dtype=np.float64)
+    areas = np.empty(n_poly, dtype=np.float64)
     mesh.polygons.foreach_get("area", areas)
-    loop_starts = np.empty(len(mesh.polygons), dtype=np.int64)
-    loop_totals = np.empty(len(mesh.polygons), dtype=np.int64)
+    loop_starts = np.empty(n_poly, dtype=np.int64)
+    loop_totals = np.empty(n_poly, dtype=np.int64)
     mesh.polygons.foreach_get("loop_start", loop_starts)
     mesh.polygons.foreach_get("loop_total", loop_totals)
+    cu = np.add.reduceat(uvs[:, 0], loop_starts) / loop_totals
+    cv = np.add.reduceat(uvs[:, 1], loop_starts) / loop_totals
+    tx = np.clip((cu * res).astype(np.int64), 0, res - 1)
+    ty = np.clip((cv * res).astype(np.int64), 0, res - 1)
+    tex = px[ty, tx, :3]  # (n_poly, 3)
     n_slots = max(len(obj.material_slots), 1)
-    sums = np.zeros((n_slots, 3), dtype=np.float64)
-    wsum = np.zeros(n_slots, dtype=np.float64)
-    for p in range(len(mesh.polygons)):
-        s = loop_starts[p]; t = loop_totals[p]
-        cu = float(np.clip(uvs[s:s + t, 0].mean(), 0, 1))
-        cv = float(np.clip(uvs[s:s + t, 1].mean(), 0, 1))
-        texel = px[min(res - 1, int(cv * res)), min(res - 1, int(cu * res))][:3]
-        m = mat_idx[p] if mat_idx[p] < n_slots else 0
-        sums[m] += texel * areas[p]
-        wsum[m] += areas[p]
+    safe_m = np.where(mat_idx < n_slots, mat_idx, 0)
     slots = []
     for i in range(n_slots):
-        mean = sums[i] / max(wsum[i], 1e-12)
+        sel = safe_m == i
+        w = areas[sel]
+        mean = (tex[sel] * w[:, None]).sum(0) / max(w.sum(), 1e-12)
         q = [int(round(min(255, max(0, c * 255)))) for c in mean]  # 8-bit sRGB
         slots.append({"material": obj.material_slots[i].material.name if i < len(obj.material_slots) and obj.material_slots[i].material else None,
                       "rgb8": q})
