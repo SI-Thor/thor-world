@@ -427,8 +427,14 @@ def assign_flat_materials(objects, flat: dict, graphs: dict) -> None:
             g = graphs.get(key, {})
             prim.inputs["Roughness"].default_value = g.get("roughness") if g.get("roughness") is not None else 0.9
             prim.inputs["Metallic"].default_value = g.get("metallic") if g.get("metallic") is not None else 0.0
+            # both levels: the glTF exporter reads the mesh's DATA-layer
+            # materials (an OBJECT-linked override never reaches it, and the
+            # stall returns) — single-user meshes make this equivalent
             slot.link = "OBJECT"
             slot.material = mat
+            mesh = o.data
+            if i < len(mesh.materials):
+                mesh.materials[i] = mat
 
 
 def export_glb(bpy, path: Path) -> float:
@@ -586,8 +592,12 @@ def main() -> int:
                 g = graphs.get(f"{o.name}__s{i}", {})
                 prim.inputs["Roughness"].default_value = g.get("roughness") if g.get("roughness") is not None else 0.9
                 prim.inputs["Metallic"].default_value = g.get("metallic") if g.get("metallic") is not None else 0.0
+                # both levels — see assign_flat_materials
                 slot.link = "OBJECT"
                 slot.material = mat
+                mesh = o.data
+                if i < len(mesh.materials):
+                    mesh.materials[i] = mat
         report["textured_assign_seconds"] = round(time.perf_counter() - t0, 3)
         export_s = export_glb(bpy, out / "source_textured.glb")
         report["export_seconds"] = round(export_s, 3)
