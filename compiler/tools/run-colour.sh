@@ -2,19 +2,44 @@
 # run-colour.sh — the round-2 colour pipeline on the Thor, one lock session.
 # Everything heavy runs under flock ~/lm-wt/heavy.lock (the box's OOM rule);
 # every python entry re-checks ≥25 GB free before it starts.
-set -e
+#
+# Steps are skipped when their outputs already exist, and a bpy teardown
+# segfault *after* a step's outputs are complete is treated as success
+# (bpy-as-a-module sometimes crashes freeing CUDA state at exit — observed
+# 2026-10-31 after a fully-written flatten report).
 S=~/lm-wt/world-stream-scratch
 PY=$S/uvvenv/bin/python
 BLEND=$S/export1/scene.blend
 cd $S
 
-echo "=== flatten A (GPU, 32²)"; $PY bake_colour.py --blend $BLEND --mode flatten --device GPU --outdir flatA
-echo "=== flatten B (GPU, 32²) — determinism twin"; $PY bake_colour.py --blend $BLEND --mode flatten --device GPU --outdir flatB
-echo "=== flatten determinism:"; sha256sum flatA/source_flat.glb flatB/source_flat.glb
+run_step() {  # run_step <artifact> <logfile> <cmd...>
+  local artifact="$1"; shift
+  local log="$1"; shift
+  if [ -f "$artifact" ]; then echo "--- skip ($artifact exists)"; return 0; fi
+  "$@" > "$log" 2>&1
+  local rc=$?
+  if [ $rc -ne 0 ] && [ ! -f "$artifact" ]; then
+    echo "FAILED (rc=$rc) — tail of $log:"; tail -15 "$log"; return 1
+  fi
+  [ $rc -ne 0 ] && echo "--- note: rc=$rc but $artifact is complete (teardown crash, tolerated)"
+  return 0
+}
 
-echo "=== bake A (GPU, 512², base+rough+normal)"; $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device GPU --outdir bakeA
-echo "=== bake B (GPU, 512²) — drift twin"; $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device GPU --outdir bakeB
-echo "=== bake C (CPU, 512², base+rough) — the deterministic-device check"; $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device CPU --skip-normal --outdir bakeCPU
+echo "=== flatten A (GPU, 32²)"
+run_step flatA/source_flat.glb flatA.log $PY bake_colour.py --blend $BLEND --mode flatten --device GPU --outdir flatA
+grep -E "sha256|bytes" flatA/bake_report.json || true
+
+echo "=== flatten B (GPU, 32²) — determinism twin"
+run_step flatB/source_flat.glb flatB.log $PY bake_colour.py --blend $BLEND --mode flatten --device GPU --outdir flatB
+echo "=== flatten determinism:"
+sha256sum flatA/source_flat.glb flatB/source_flat.glb
+
+echo "=== bake A (GPU, 512², base+rough+normal)"
+run_step bakeA/cycles_beauty.png bakeA.log $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device GPU --outdir bakeA
+echo "=== bake B (GPU, 512²) — drift twin"
+run_step bakeB/cycles_beauty.png bakeB.log $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device GPU --outdir bakeB
+echo "=== bake C (CPU, 512², base+rough) — the deterministic-device check"
+run_step bakeCPU/bake_report.json bakeCPU.log $PY bake_colour.py --blend $BLEND --mode bake --res 512 --device CPU --skip-normal --outdir bakeCPU
 
 echo "=== drift: bake A vs B (pixel stats per PNG pair)"
 $PY - bakeA bakeB <<'EOF'
